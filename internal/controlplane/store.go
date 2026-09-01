@@ -224,9 +224,11 @@ PRAGMA user_version=2;`
 	return nil
 }
 
-// upgradeToVersionTwo removes the Shepherd schedule bookkeeping. Jobs keep their
-// rows. The steps run in one transaction and skip columns that are already gone,
-// so an interrupted upgrade completes on the next start.
+// upgradeToVersionTwo removes the Shepherd schedule bookkeeping. Finished jobs
+// keep their rows. Queued schedule jobs are failed so they cannot overlap a
+// replacement trigger, and a running one blocks the upgrade until it finishes.
+// The steps run in one transaction and skip columns that are already gone, so
+// an interrupted upgrade completes on the next start.
 func (s *Store) upgradeToVersionTwo(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -236,13 +238,18 @@ func (s *Store) upgradeToVersionTwo(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS jobs_active_shepherd_repository; DROP TABLE IF EXISTS schedule_state;`); err != nil {
 		return err
 	}
-	for _, column := range []string{"has_shepherd", "schedule_name"} {
+	for _, column := range []string{"schedule_name", "has_shepherd"} {
 		var present int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name=?`, column).Scan(&present); err != nil {
 			return err
 		}
 		if present == 0 {
 			continue
+		}
+		if column == "schedule_name" {
+			if err := s.drainScheduledJobs(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE jobs DROP COLUMN `+column); err != nil {
 			return err
@@ -252,6 +259,23 @@ func (s *Store) upgradeToVersionTwo(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) drainScheduledJobs(ctx context.Context, tx *sql.Tx) error {
+	var running int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE schedule_name<>'' AND state='running'`).Scan(&running); err != nil {
+		return err
+	}
+	if running > 0 {
+		return fmt.Errorf("%d scheduled Shepherd jobs are still running; let them finish and start again", running)
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	const reason = "cancelled by schema upgrade: shepherd schedules were removed"
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='failed',exit_code=1,error=?,completed_at=? WHERE state='queued' AND job_id IN (SELECT id FROM jobs WHERE schedule_name<>'' AND state='queued')`, reason, now); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE schedule_name<>'' AND state='queued'`, now)
+	return err
 }
 
 func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, command config.ResolvedCommand) (string, error) {

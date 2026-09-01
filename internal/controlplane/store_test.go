@@ -1092,27 +1092,48 @@ func TestOpenStoreUpgradesVersionOneSchema(t *testing.T) {
 	}
 }
 
-func testVersionOneUpgrade(t *testing.T, partial string) {
-	path := filepath.Join(t.TempDir(), "machinist.db")
+func TestOpenStoreUpgradeDrainsScheduledShepherdJobs(t *testing.T) {
+	path := openVersionOneDatabase(t, `INSERT INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES('job_queued','p','api','shepherd','api',1,'queued','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO runs(id,job_id,command,command_hash,executor,repository,rendered_prompt,timeout_ms,state) VALUES('run_queued','job_queued','shepherd','h','codex','api','p',1000,'queued');`)
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != "failed" || len(snapshot.Jobs[0].Runs) != 1 || snapshot.Jobs[0].Runs[0].State != "failed" {
+		t.Fatalf("snapshot = %#v, %v", snapshot, err)
+	}
+	if !strings.Contains(snapshot.Jobs[0].Runs[0].Error, "shepherd schedules were removed") {
+		t.Fatalf("run error = %q", snapshot.Jobs[0].Runs[0].Error)
+	}
+}
+
+func TestOpenStoreUpgradeWaitsForRunningScheduledShepherdJob(t *testing.T) {
+	path := openVersionOneDatabase(t, `INSERT INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES('job_running','p','api','shepherd','api',1,'running','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`)
+	store, err := OpenStore(path)
+	if store != nil {
+		store.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("open error = %v, want running job refusal", err)
+	}
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.Exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, prompt TEXT NOT NULL, repository TEXT NOT NULL, command TEXT NOT NULL,
- schedule_name TEXT NOT NULL DEFAULT '', has_shepherd INTEGER NOT NULL DEFAULT 0,
- trigger_identity TEXT NOT NULL DEFAULT '', trigger_config_signature TEXT NOT NULL DEFAULT '',
- trigger_generation_id TEXT NOT NULL DEFAULT '', occurrence_key TEXT NOT NULL DEFAULT '',
- trigger_subject TEXT NOT NULL DEFAULT '', github_issue_title TEXT NOT NULL DEFAULT '',
- fixed_trigger INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE UNIQUE INDEX jobs_active_shepherd_repository ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running');
-CREATE TABLE schedule_state (name TEXT PRIMARY KEY, next_run_at TEXT NOT NULL);
-INSERT INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES('job_1','p','api','shepherd','api',1,'succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
-PRAGMA user_version=1;` + partial); err != nil {
-		t.Fatal(err)
+	defer legacy.Close()
+	var version, columns int
+	if err := legacy.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("schema version = %d, %v, want untouched version 1", version, err)
 	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
+	if err := legacy.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 2 {
+		t.Fatalf("legacy columns = %d, %v, want both retained", columns, err)
 	}
+}
+
+func testVersionOneUpgrade(t *testing.T, partial string) {
+	path := openVersionOneDatabase(t, `INSERT INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES('job_1','p','api','shepherd','api',1,'succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`+partial)
 	store, err := OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1130,4 +1151,36 @@ PRAGMA user_version=1;` + partial); err != nil {
 	if err != nil || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != "job_1" {
 		t.Fatalf("snapshot = %#v, %v", snapshot, err)
 	}
+}
+
+// openVersionOneDatabase creates a schema version 1 database and runs extra
+// statements against it before returning its path.
+func openVersionOneDatabase(t *testing.T, extra string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, prompt TEXT NOT NULL, repository TEXT NOT NULL, command TEXT NOT NULL,
+ schedule_name TEXT NOT NULL DEFAULT '', has_shepherd INTEGER NOT NULL DEFAULT 0,
+ trigger_identity TEXT NOT NULL DEFAULT '', trigger_config_signature TEXT NOT NULL DEFAULT '',
+ trigger_generation_id TEXT NOT NULL DEFAULT '', occurrence_key TEXT NOT NULL DEFAULT '',
+ trigger_subject TEXT NOT NULL DEFAULT '', github_issue_title TEXT NOT NULL DEFAULT '',
+ fixed_trigger INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE runs (
+ id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id), command TEXT NOT NULL, command_hash TEXT NOT NULL,
+ executor TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL, rendered_prompt TEXT NOT NULL,
+ timeout_ms INTEGER NOT NULL, state TEXT NOT NULL, worker_instance TEXT, worker_name TEXT NOT NULL DEFAULT '',
+ lease_token TEXT, lease_expires_at INTEGER, exit_code INTEGER, error TEXT, result TEXT, events TEXT,
+ started_at TEXT, completed_at TEXT, duration_millis INTEGER, token_usage INTEGER);
+CREATE UNIQUE INDEX jobs_active_shepherd_repository ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running');
+CREATE TABLE schedule_state (name TEXT PRIMARY KEY, next_run_at TEXT NOT NULL);
+PRAGMA user_version=1;` + extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
