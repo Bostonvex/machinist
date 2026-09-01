@@ -4,14 +4,20 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
 
 MAX_REPAIRS = 3
+OUTPUT_DRAIN_TIMEOUT = 1.0
 FEEDBACK = 10
 TIMEOUT = 11
 HEAD_CHANGED = 12
@@ -33,36 +39,93 @@ def run_codex(prompt: str, session_id: str | None = None) -> str:
     else:
         command.extend(["resume", "--json", session_id, "-"])
 
+    managed_run = bool(os.environ.get("MACHINIST_RUN_ID"))
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
+        start_new_session=not managed_run,
         text=True,
     )
     assert process.stdin is not None
     assert process.stdout is not None
-    process.stdin.write(prompt)
-    process.stdin.close()
 
-    observed_session = session_id
+    stop_reader = threading.Event()
+    reader_done = threading.Event()
+    reader_errors: list[BaseException] = []
+    observed_session = [session_id]
+    output_spool = tempfile.SpooledTemporaryFile(
+        max_size=1024 * 1024,
+        mode="w+t",
+    )
+
+    def read_stdout() -> None:
+        try:
+            for line in process.stdout:
+                if stop_reader.is_set():
+                    return
+                event = codex_event(line)
+                output_spool.write(line)
+                if observed_session[0] is None:
+                    observed_session[0] = thread_id(event) or observed_session[0]
+        except BaseException as error:
+            reader_errors.append(error)
+        finally:
+            reader_done.set()
+
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    reader.start()
     try:
-        for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            event = codex_event(line)
-            if observed_session is None:
-                observed_session = thread_id(event) or observed_session
-    except BaseException:
-        process.kill()
-        process.wait()
-        raise
+        process.stdin.write(prompt)
+        process.stdin.close()
+        while True:
+            if reader_done.is_set() and reader_errors:
+                raise reader_errors[0]
+            return_code = process.poll()
+            if return_code is not None:
+                break
+            time.sleep(0.05)
 
-    return_code = process.wait()
-    if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command)
-    if observed_session is None:
-        raise RuntimeError("Codex completed without a thread.started event")
-    return observed_session
+        kill_codex_processes(process, managed_run)
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, command)
+        if not reader_done.wait(OUTPUT_DRAIN_TIMEOUT):
+            raise RuntimeError("Codex stdout remained open after its process exited")
+        if reader_errors:
+            raise reader_errors[0]
+        if observed_session[0] is None:
+            raise RuntimeError("Codex completed without a thread.started event")
+
+        output_spool.seek(0)
+        for line in output_spool:
+            sys.stdout.write(line)
+        sys.stdout.flush()
+        return observed_session[0]
+    except BaseException:
+        kill_codex_processes(process, managed_run)
+        raise
+    finally:
+        stop_reader.set()
+        if not process.stdin.closed:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        reader.join(timeout=1)
+        output_spool.close()
+
+
+def kill_codex_processes(
+    process: subprocess.Popen[str], managed_run: bool
+) -> None:
+    try:
+        if managed_run:
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    process.wait()
 
 
 def codex_event(line: str) -> dict[str, Any]:
