@@ -84,9 +84,13 @@ def thread_id(event: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def current_pull_request() -> PullRequest:
+def current_pull_request(number: int | None = None) -> PullRequest:
+    command = ["gh", "pr", "view"]
+    if number is not None:
+        command.append(str(number))
+    command.extend(["--json", "number,url,state,isDraft,headRefOid"])
     result = subprocess.run(
-        ["gh", "pr", "view", "--json", "number,url,state,isDraft,headRefOid"],
+        command,
         check=True,
         capture_output=True,
         text=True,
@@ -149,9 +153,9 @@ def run(prompt: str, output: TextIO = sys.stdout) -> int:
 
     print("implement", file=output, flush=True)
     session_id = run_codex(prompt)
+    pull_request = current_pull_request()
 
     for repair in range(MAX_REPAIRS + 1):
-        pull_request = current_pull_request()
         print(
             f"wait for review: PR #{pull_request.number} at {pull_request.head} "
             f"({repair}/{MAX_REPAIRS} repairs)",
@@ -174,6 +178,7 @@ def run(prompt: str, output: TextIO = sys.stdout) -> int:
                 repair_prompt(pull_request, feedback, next_repair),
                 session_id=session_id,
             )
+            pull_request = current_pull_request(pull_request.number)
             continue
         if outcome == FEEDBACK:
             raise RuntimeError(

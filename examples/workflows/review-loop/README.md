@@ -11,6 +11,10 @@ repair uses `codex exec resume` with that exact session ID, so implementation co
 preserved. The implementation prompt remains responsible for creating or updating one
 non-draft pull request and using a fresh subagent for independent local review.
 
+The driver discovers the pull request once after implementation, then queries that exact
+pull request number after every repair. A branch change cannot silently switch the review
+loop to a replacement pull request.
+
 Both helpers receive the pull request number and expected immutable head SHA. The waiter
 uses this exit-code contract:
 

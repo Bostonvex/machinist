@@ -76,12 +76,14 @@ fi
 		t.Fatal(err)
 	}
 	gh := `#!/bin/sh
+printf '%s\n' "$*" >> "$GH_LOG"
 printf '%s\n' '{"number":42,"url":"https://github.test/pull/42","state":"OPEN","isDraft":false,"headRefOid":"abc123"}'
 `
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(gh), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	helperLog := filepath.Join(directory, "helpers.log")
+	ghLog := filepath.Join(directory, "gh.log")
 	reader := "#!/bin/sh\nprintf 'read:%s:%s\\n' \"$1\" \"$2\" >> \"$MACHINIST_HELPER_LOG\"\nprintf 'review finding %s' \"$1\"\n"
 	if err := os.WriteFile(filepath.Join(scripts, "read-review-feedback.sh"), []byte(reader), 0o700); err != nil {
 		t.Fatal(err)
@@ -103,6 +105,7 @@ printf '%s\n' '{"number":42,"url":"https://github.test/pull/42","state":"OPEN","
 	command.Env = append(
 		command.Env,
 		"CODEX_LOG="+codexLog,
+		"GH_LOG="+ghLog,
 		"MACHINIST_HELPER_LOG="+helperLog,
 		"MACHINIST_REVIEW_COUNTER="+counter,
 	)
@@ -132,6 +135,13 @@ printf '%s\n' '{"number":42,"url":"https://github.test/pull/42","state":"OPEN","
 	}
 	if got := strings.Count(string(helperCalls), "read:42:abc123"); got != 3 {
 		t.Fatalf("feedback helper calls = %d, want 3; log:\n%s", got, helperCalls)
+	}
+	ghCalls, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(ghCalls), "pr view 42 --json"); got != 3 {
+		t.Fatalf("pinned PR lookups = %d, want 3; log:\n%s", got, ghCalls)
 	}
 }
 
