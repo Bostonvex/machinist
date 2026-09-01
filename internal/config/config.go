@@ -68,11 +68,10 @@ type Server struct {
 }
 
 type Config struct {
-	Server   Server                      `toml:"server"`
-	Commands map[string]Command          `toml:"commands"`
-	Shepherd map[string]ShepherdSchedule `toml:"shepherd"`
-	GitHub   GitHub                      `toml:"github"`
-	Triggers TriggerDefinitions          `toml:"triggers"`
+	Server   Server             `toml:"server"`
+	Commands map[string]Command `toml:"commands"`
+	GitHub   GitHub             `toml:"github"`
+	Triggers TriggerDefinitions `toml:"triggers"`
 	path     string
 }
 
@@ -135,21 +134,6 @@ type Command struct {
 	Executor   string `toml:"executor"`
 	PromptFile string `toml:"prompt_file"`
 	Timeout    string `toml:"timeout"`
-}
-
-type ShepherdSchedule struct {
-	Repository string `toml:"repository"`
-	Every      string `toml:"every"`
-	MaxActions int    `toml:"max_actions"`
-}
-
-type ResolvedShepherdSchedule struct {
-	Name       string
-	Repository string
-	Every      time.Duration
-	MaxActions int
-	Prompt     string
-	Command    ResolvedCommand
 }
 
 type ResolvedCommand struct {
@@ -231,6 +215,9 @@ func loadConfigFile(path string) (Config, error) {
 	}
 	if _, ok := raw["pipelines"]; ok {
 		return Config{}, fmt.Errorf("parse Machinist config %q: pipelines were removed; replace each pipeline with a repository-owned orchestration script configured under [commands]", absPath)
+	}
+	if _, ok := raw["shepherd"]; ok {
+		return Config{}, fmt.Errorf("parse Machinist config %q: shepherd schedules were removed; schedule the shepherd command with a [triggers.cron.NAME] or [triggers.interval.NAME] trigger", absPath)
 	}
 	if _, ok := raw["agents"]; ok {
 		return Config{}, fmt.Errorf("parse Machinist config %q: agents were renamed to commands; move [agents.NAME] definitions to [commands.NAME] and use --command", absPath)
@@ -366,61 +353,6 @@ func (c Config) ResolveCommand(name string) (ResolvedCommand, error) {
 }
 
 func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
-
-func LoadShepherdSchedules(path string) ([]ResolvedShepherdSchedule, error) {
-	definition, err := loadConfigFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(definition.Shepherd) == 0 {
-		return nil, nil
-	}
-	command, ok := definition.Commands["shepherd"]
-	if !ok {
-		return nil, errors.New("shepherd schedules require a commands.shepherd definition")
-	}
-	resolvedCommand, err := resolveCommand(definition.path, "shepherd", command)
-	if err != nil {
-		return nil, err
-	}
-	seenRepositories := make(map[string]string)
-	result := make([]ResolvedShepherdSchedule, 0, len(definition.Shepherd))
-	for _, name := range sortedMapKeys(definition.Shepherd) {
-		schedule := definition.Shepherd[name]
-		repository := strings.TrimSpace(schedule.Repository)
-		if strings.TrimSpace(name) == "" || repository == "" {
-			return nil, errors.New("shepherd schedule names and repositories must be non-empty")
-		}
-		if previous, exists := seenRepositories[repository]; exists {
-			return nil, fmt.Errorf("shepherd schedules %q and %q target the same repository %q", previous, name, repository)
-		}
-		seenRepositories[repository] = name
-		every, err := time.ParseDuration(schedule.Every)
-		if err != nil {
-			return nil, fmt.Errorf("shepherd schedule %q every: %w", name, err)
-		}
-		if every < time.Minute {
-			return nil, fmt.Errorf("shepherd schedule %q every must be at least 1m", name)
-		}
-		if schedule.MaxActions <= 0 {
-			return nil, fmt.Errorf("shepherd schedule %q max_actions must be positive", name)
-		}
-		prompt := fmt.Sprintf("Run the scheduled Shepherd queue for repository %q with max_actions=%d. Perform at most %d mutating actions in this run.", repository, schedule.MaxActions, schedule.MaxActions)
-		rendered, err := RenderPrompt(resolvedCommand, prompt)
-		if err != nil {
-			return nil, fmt.Errorf("render shepherd schedule %q: %w", name, err)
-		}
-		result = append(result, ResolvedShepherdSchedule{
-			Name:       name,
-			Repository: repository,
-			Every:      every,
-			MaxActions: schedule.MaxActions,
-			Prompt:     prompt,
-			Command:    rendered,
-		})
-	}
-	return result, nil
-}
 
 func resolveCommand(definitionPath, name string, command Command) (ResolvedCommand, error) {
 	if strings.TrimSpace(command.Executor) == "" {

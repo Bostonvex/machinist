@@ -107,7 +107,7 @@ func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	}
 }
 
-func TestScheduledShepherdExecutesInDisposableRepository(t *testing.T) {
+func TestManagedWorkerExecutesQueuedShepherdCommand(t *testing.T) {
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repository")
 	if output, err := exec.Command("git", "init", "--quiet", repository).CombinedOutput(); err != nil {
@@ -121,26 +121,25 @@ func TestScheduledShepherdExecutesInDisposableRepository(t *testing.T) {
 executor = "test"
 prompt_file = "shepherd.md"
 timeout = "5s"
-
-[shepherd.disposable]
-repository = "disposable"
-every = "1m"
-max_actions = 2
 `
 	if err := os.WriteFile(definitionPath, []byte(definition), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	schedules, err := config.LoadShepherdSchedules(definitionPath)
-	if err != nil || len(schedules) != 1 {
-		t.Fatalf("schedules = %#v, %v", schedules, err)
+	command, err := config.LoadCommand(definitionPath, "shepherd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err = config.RenderPrompt(command, "Perform at most 2 mutating actions in this run.")
+	if err != nil {
+		t.Fatal(err)
 	}
 	store, err := controlplane.OpenStore(filepath.Join(directory, "machinist.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, created, err := store.CreateScheduledJob(t.Context(), schedules[0]); err != nil || !created {
-		t.Fatalf("scheduled job created = %t, %v", created, err)
+	if _, err := store.CreateJob(t.Context(), "queued shepherd", "disposable", "shepherd", command); err != nil {
+		t.Fatal(err)
 	}
 	server, err := controlplane.NewServer(store, definitionPath, "secret", 0)
 	if err != nil {
@@ -173,13 +172,13 @@ max_actions = 2
 			t.Fatal(err)
 		}
 		if len(snapshot.Jobs) == 1 && snapshot.Jobs[0].State == "succeeded" {
-			if snapshot.Jobs[0].ScheduleName != "disposable" || snapshot.Jobs[0].Runs[0].Command != "shepherd" {
-				t.Fatalf("scheduled job = %#v", snapshot.Jobs[0])
+			if snapshot.Jobs[0].Runs[0].Command != "shepherd" {
+				t.Fatalf("queued job = %#v", snapshot.Jobs[0])
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("scheduled job did not complete: %#v", snapshot.Jobs)
+			t.Fatalf("queued job did not complete: %#v", snapshot.Jobs)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
