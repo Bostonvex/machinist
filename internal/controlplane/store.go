@@ -189,10 +189,7 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 		}
 	}
 	if version == 1 {
-		// Version 2 removed Shepherd schedules. Jobs keep their rows; only the
-		// schedule bookkeeping goes away.
-		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS jobs_active_shepherd_repository; DROP TABLE IF EXISTS schedule_state;
-ALTER TABLE jobs DROP COLUMN has_shepherd; ALTER TABLE jobs DROP COLUMN schedule_name;`); err != nil {
+		if err := s.upgradeToVersionTwo(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 2: %w", err)
 		}
 	}
@@ -225,6 +222,36 @@ PRAGMA user_version=2;`
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	return nil
+}
+
+// upgradeToVersionTwo removes the Shepherd schedule bookkeeping. Jobs keep their
+// rows. The steps run in one transaction and skip columns that are already gone,
+// so an interrupted upgrade completes on the next start.
+func (s *Store) upgradeToVersionTwo(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS jobs_active_shepherd_repository; DROP TABLE IF EXISTS schedule_state;`); err != nil {
+		return err
+	}
+	for _, column := range []string{"has_shepherd", "schedule_name"} {
+		var present int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name=?`, column).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE jobs DROP COLUMN `+column); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version=2`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, command config.ResolvedCommand) (string, error) {

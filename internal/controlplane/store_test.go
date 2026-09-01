@@ -1084,6 +1084,15 @@ func assertReclaimedRun(t *testing.T, store *Store, runID, jobID string) {
 }
 
 func TestOpenStoreUpgradesVersionOneSchema(t *testing.T) {
+	for name, partial := range map[string]string{
+		"complete version one": "",
+		"interrupted upgrade":  "DROP INDEX jobs_active_shepherd_repository; ALTER TABLE jobs DROP COLUMN has_shepherd;",
+	} {
+		t.Run(name, func(t *testing.T) { testVersionOneUpgrade(t, partial) })
+	}
+}
+
+func testVersionOneUpgrade(t *testing.T, partial string) {
 	path := filepath.Join(t.TempDir(), "machinist.db")
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -1098,7 +1107,7 @@ func TestOpenStoreUpgradesVersionOneSchema(t *testing.T) {
 CREATE UNIQUE INDEX jobs_active_shepherd_repository ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running');
 CREATE TABLE schedule_state (name TEXT PRIMARY KEY, next_run_at TEXT NOT NULL);
 INSERT INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES('job_1','p','api','shepherd','api',1,'succeeded','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
-PRAGMA user_version=1;`); err != nil {
+PRAGMA user_version=1;` + partial); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
