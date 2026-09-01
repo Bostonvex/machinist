@@ -52,7 +52,7 @@ default branch is unchanged.
 
 The repository must start without the auto-merge label. Repeat its name with
 `--confirm-disposable` to acknowledge that the run creates and merges disposable pull
-requests. Use a Machinist definition without a configured Shepherd schedule so the
+requests. Use a Machinist definition without a Shepherd trigger so the
 disposable direct smoke cannot overlap production scheduled work. Set a token for a
 second GitHub account that can create pull requests in the scratch repository. The eval
 uses that account for candidates so Shepherd's authenticated account provides an

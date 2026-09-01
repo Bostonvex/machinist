@@ -287,23 +287,7 @@ func runSelection(ctx context.Context, options *commandOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := validateDirectCommand(definitionPath, command); err != nil {
-		return err
-	}
 	return runConfiguredCommand(ctx, options, worker, command)
-}
-
-func validateDirectCommand(definitionPath string, command config.ResolvedCommand) error {
-	if command.Name == "shepherd" {
-		schedules, err := config.LoadShepherdSchedules(definitionPath)
-		if err != nil {
-			return err
-		}
-		if len(schedules) > 0 {
-			return errors.New("scheduled Shepherd cannot run directly; submit managed work so the control plane can enforce per-repository overlap protection")
-		}
-	}
-	return nil
 }
 
 func runConfiguredCommand(ctx context.Context, options *commandOptions, worker config.Worker, configured config.ResolvedCommand) error {

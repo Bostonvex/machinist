@@ -37,7 +37,6 @@ var webAssets embed.FS
 type Server struct {
 	store             *Store
 	definitionPath    string
-	schedules         []config.ResolvedShepherdSchedule
 	triggers          []config.ResolvedTrigger
 	github            githubTriggerClient
 	schedulerEvery    time.Duration
@@ -89,10 +88,6 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 	if err != nil {
 		return nil, err
 	}
-	schedules, err := config.LoadShepherdSchedules(definitionPath)
-	if err != nil {
-		return nil, err
-	}
 	managedTriggers, err := config.LoadTriggers(definitionPath)
 	if err != nil {
 		return nil, err
@@ -109,7 +104,7 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 		return nil, fmt.Errorf("restore managed triggers: %w", err)
 	}
 	server := &Server{
-		store: store, definitionPath: definitionPath, schedules: schedules, triggers: managedTriggers,
+		store: store, definitionPath: definitionPath, triggers: managedTriggers,
 		github: NewGitHubCLI("gh", 30*time.Second), now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
@@ -211,9 +206,6 @@ func (s *Server) runScheduler(ctx context.Context) error {
 			}
 		}()
 	}
-	if len(s.schedules) > 0 {
-		loop(false, s.enqueueScheduledRuns)
-	}
 	for _, trigger := range s.triggers {
 		loop(false, func(ctx context.Context) error {
 			if err := s.processManagedTrigger(ctx, trigger); err != nil {
@@ -244,16 +236,6 @@ func (s *Server) maintainState(ctx context.Context) error {
 	_, reclaimErr := s.store.ReclaimExpiredLeases(ctx)
 	_, pruneErr := s.store.PruneSupersededWorkers(ctx, s.store.now().UTC().Add(-workerAvailabilityWindow))
 	return errors.Join(reclaimErr, pruneErr)
-}
-
-func (s *Server) enqueueScheduledRuns(ctx context.Context) error {
-	var failures []error
-	for _, schedule := range s.schedules {
-		if _, _, err := s.store.CreateScheduledJob(ctx, schedule); err != nil {
-			failures = append(failures, fmt.Errorf("queue shepherd schedule %q: %w", schedule.Name, err))
-		}
-	}
-	return errors.Join(failures...)
 }
 
 func (s *Server) reportSchedulerError(err error) {

@@ -19,8 +19,13 @@ executor = "codex"
 prompt_file = "prompts/shepherd.md"
 timeout = "120m"
 
-# Opt in one configured repository by adding a schedule like this:
-# [shepherd.my-project]
+# Schedule Shepherd for one configured repository with a trigger like this:
+# [github.repositories]
+# my-project = "owner/my-project"
+#
+# [triggers.cron.shepherd-my-project]
+# schedule = "*/30 * * * *"
+# timezone = "UTC"
 # repository = "my-project"
-# every = "30m"
-# max_actions = 3
+# command = "shepherd"
+# prompt = "Run the Shepherd queue for my-project with max_actions=3. Perform at most 3 mutating actions in this run."

@@ -203,72 +203,6 @@ func TestLoadConfigValidatesOptionalConcurrentJobLimit(t *testing.T) {
 	}
 }
 
-func TestLoadShepherdSchedulesResolvesAgentAndLimits(t *testing.T) {
-	directory := t.TempDir()
-	writeTestFile(t, filepath.Join(directory, "shepherd.md"), "Policy:\n{{machinist.prompt}}\n")
-	path := filepath.Join(directory, "config.toml")
-	writeTestFile(t, path, `[commands.shepherd]
-executor = "test"
-prompt_file = "shepherd.md"
-timeout = "2h"
-
-[shepherd.api]
-repository = "api"
-every = "15m"
-max_actions = 4
-`)
-
-	schedules, err := LoadShepherdSchedules(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(schedules) != 1 {
-		t.Fatalf("schedules = %#v", schedules)
-	}
-	schedule := schedules[0]
-	if schedule.Name != "api" || schedule.Repository != "api" || schedule.Every != 15*time.Minute || schedule.MaxActions != 4 {
-		t.Fatalf("schedule = %#v", schedule)
-	}
-	if schedule.Command.Name != "shepherd" || schedule.Command.Timeout != 2*time.Hour || !strings.Contains(schedule.Command.Prompt, "max_actions=4") || !strings.Contains(schedule.Command.Prompt, "at most 4 mutating actions") {
-		t.Fatalf("scheduled agent = %#v", schedule.Command)
-	}
-}
-
-func TestLoadShepherdSchedulesRejectsUnsafeConfiguration(t *testing.T) {
-	for name, test := range map[string]struct {
-		body string
-		want string
-	}{
-		"missing agent": {
-			body: "[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n",
-			want: "commands.shepherd",
-		},
-		"short interval": {
-			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"30s\"\nmax_actions=1\n",
-			want: "at least 1m",
-		},
-		"zero actions": {
-			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=0\n",
-			want: "must be positive",
-		},
-		"duplicate repository": {
-			body: "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.first]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n[shepherd.second]\nrepository=\"api\"\nevery=\"30m\"\nmax_actions=2\n",
-			want: "same repository",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			directory := t.TempDir()
-			writeTestFile(t, filepath.Join(directory, "shepherd.md"), "{{machinist.prompt}}\n")
-			path := filepath.Join(directory, "config.toml")
-			writeTestFile(t, path, test.body)
-			_, err := LoadShepherdSchedules(path)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
 func TestLoadCommandResolvesPromptAndHashesDefinition(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "plan.md"), "Inspect the repository for {{machinist.prompt}}.\n")
@@ -725,5 +659,16 @@ func writeTestFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadConfigRejectsRemovedShepherdSchedules(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, filepath.Join(directory, "shepherd.md"), "{{machinist.prompt}}\n")
+	writeTestFile(t, path, "[commands.shepherd]\nexecutor=\"test\"\nprompt_file=\"shepherd.md\"\n[shepherd.api]\nrepository=\"api\"\nevery=\"15m\"\nmax_actions=1\n")
+	_, err := LoadDefinitions(path)
+	if err == nil || !strings.Contains(err.Error(), "shepherd schedules were removed") {
+		t.Fatalf("error = %v, want removed shepherd schedule guidance", err)
 	}
 }

@@ -46,7 +46,6 @@ type Job struct {
 	Repository       string    `json:"repository"`
 	GitHubIssueTitle string    `json:"github_issue_title,omitempty"`
 	Command          string    `json:"command"`
-	ScheduleName     string    `json:"schedule_name,omitempty"`
 	TriggerID        string    `json:"trigger_id,omitempty"`
 	OccurrenceKey    string    `json:"occurrence_key,omitempty"`
 	TriggerSubject   string    `json:"trigger_subject,omitempty"`
@@ -173,7 +172,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 1
+	const schemaVersion = 2
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -181,7 +180,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if version > schemaVersion {
 		return fmt.Errorf("database schema version %d is newer than supported version %d", version, schemaVersion)
 	}
-	if version < schemaVersion {
+	if version < 1 {
 		if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF;
 DROP TABLE IF EXISTS github_trigger_requests; DROP TABLE IF EXISTS trigger_state; DROP TABLE IF EXISTS schedule_state;
 DROP TABLE IF EXISTS known_repositories; DROP TABLE IF EXISTS worker_repositories; DROP TABLE IF EXISTS workers;
@@ -189,11 +188,18 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 			return fmt.Errorf("replace legacy database schema: %w", err)
 		}
 	}
+	if version == 1 {
+		// Version 2 removed Shepherd schedules. Jobs keep their rows; only the
+		// schedule bookkeeping goes away.
+		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS jobs_active_shepherd_repository; DROP TABLE IF EXISTS schedule_state;
+ALTER TABLE jobs DROP COLUMN has_shepherd; ALTER TABLE jobs DROP COLUMN schedule_name;`); err != nil {
+			return fmt.Errorf("upgrade database schema to version 2: %w", err)
+		}
+	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
  id TEXT PRIMARY KEY, prompt TEXT NOT NULL, repository TEXT NOT NULL, command TEXT NOT NULL,
- schedule_name TEXT NOT NULL DEFAULT '', has_shepherd INTEGER NOT NULL DEFAULT 0,
  trigger_identity TEXT NOT NULL DEFAULT '', trigger_config_signature TEXT NOT NULL DEFAULT '',
  trigger_generation_id TEXT NOT NULL DEFAULT '', occurrence_key TEXT NOT NULL DEFAULT '',
  trigger_subject TEXT NOT NULL DEFAULT '', github_issue_title TEXT NOT NULL DEFAULT '',
@@ -208,15 +214,13 @@ CREATE INDEX IF NOT EXISTS runs_dispatch ON runs(state, job_id);
 CREATE TABLE IF NOT EXISTS workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS worker_repositories (worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE, repository TEXT NOT NULL, PRIMARY KEY(worker_instance,repository));
 CREATE TABLE IF NOT EXISTS known_repositories (repository TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS schedule_state (name TEXT PRIMARY KEY,next_run_at TEXT NOT NULL,repository TEXT NOT NULL DEFAULT '',every_ms INTEGER NOT NULL DEFAULT 0,execution_signature TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS trigger_state (identity TEXT PRIMARY KEY,family TEXT NOT NULL,config_signature TEXT NOT NULL,generation_id TEXT NOT NULL,next_due_at TEXT,pending_occurrence_at TEXT,last_attempt_at TEXT,last_success_at TEXT,last_job_state TEXT NOT NULL DEFAULT '',last_job_error TEXT NOT NULL DEFAULT '',health TEXT NOT NULL DEFAULT 'healthy',latest_error TEXT NOT NULL DEFAULT '',candidate_count INTEGER NOT NULL DEFAULT 0,admission_count INTEGER NOT NULL DEFAULT 0,coalesced_count INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS github_trigger_requests (trigger_identity TEXT NOT NULL,occurrence_key TEXT NOT NULL,config_generation TEXT NOT NULL,repository TEXT NOT NULL,issue_number INTEGER NOT NULL,subject TEXT NOT NULL,actor TEXT NOT NULL,request_label TEXT NOT NULL,requested_at TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('pending','admitted','rejected')),job_id TEXT,needs_reconciliation INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL,PRIMARY KEY(trigger_identity,occurrence_key));
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_shepherd_repository ON jobs(repository) WHERE has_shepherd=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>'';
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=1;`
+PRAGMA user_version=2;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -237,7 +241,7 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, 
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,?,?,'queued',?,?)`, jobID, prompt, repository, name, command.Name == "shepherd", now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,state,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?)`, jobID, prompt, repository, name, now, now); err != nil {
 		return "", fmt.Errorf("insert job: %w", err)
 	}
 	runID, err := randomID("run", 12)
@@ -437,7 +441,7 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 		return "", false, err
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,has_shepherd,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,github_issue_title,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionName, admission.Command.Name == "shepherd", admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, admission.GitHubIssueTitle, fixed, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,trigger_identity,trigger_config_signature,trigger_generation_id,occurrence_key,trigger_subject,github_issue_title,fixed_trigger,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`, jobID, admission.Prompt, admission.Repository, admission.SelectionName, admission.Identity, admission.ConfigSignature, admission.ConfigGeneration, admission.OccurrenceKey, admission.Subject, admission.GitHubIssueTitle, fixed, now, now); err != nil {
 		return "", false, fmt.Errorf("insert triggered job: %w", err)
 	}
 	if admission.Family == "github" {
@@ -651,81 +655,6 @@ func (s *Store) AddTriggerCoalesced(ctx context.Context, identity, configGenerat
 		return fmt.Errorf("%w: %s", ErrTriggerStale, identity)
 	}
 	return nil
-}
-
-// CreateScheduledJob queues one due Shepherd run. It persists the next due time and uses
-// a partial unique index so separate server processes and manual submissions cannot
-// overlap Shepherd runs for a repository.
-func (s *Store) CreateScheduledJob(ctx context.Context, schedule config.ResolvedShepherdSchedule) (string, bool, error) {
-	nowTime := s.now().UTC()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", false, err
-	}
-	defer tx.Rollback()
-	signature, err := shepherdScheduleSignature(schedule)
-	if err != nil {
-		return "", false, err
-	}
-	var nextRun, repository, executionSignature string
-	var everyMillis int64
-	err = tx.QueryRowContext(ctx, `SELECT next_run_at,repository,every_ms,execution_signature FROM schedule_state WHERE name=?`, schedule.Name).Scan(&nextRun, &repository, &everyMillis, &executionSignature)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", false, fmt.Errorf("read shepherd schedule %q: %w", schedule.Name, err)
-	}
-	if err == nil {
-		next, parseErr := time.Parse(time.RFC3339Nano, nextRun)
-		if parseErr != nil {
-			return "", false, fmt.Errorf("parse shepherd schedule %q next run: %w", schedule.Name, parseErr)
-		}
-		unchanged := repository == schedule.Repository && everyMillis == schedule.Every.Milliseconds() && executionSignature == signature
-		if unchanged && next.After(nowTime) {
-			return "", false, tx.Commit()
-		}
-	}
-	jobID, err := randomID("job", 12)
-	if err != nil {
-		return "", false, err
-	}
-	runID, err := randomID("run", 12)
-	if err != nil {
-		return "", false, err
-	}
-	now := nowTime.Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,prompt,repository,command,schedule_name,has_shepherd,state,created_at,updated_at) VALUES(?,?,?,'shepherd',?,1,'queued',?,?)`, jobID, schedule.Prompt, schedule.Repository, schedule.Name, now, now)
-	if err != nil {
-		return "", false, fmt.Errorf("insert scheduled job: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return "", false, err
-	}
-	if changed == 0 {
-		return "", false, tx.Commit()
-	}
-	command := schedule.Command
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, schedule.Repository, command.Prompt, command.Timeout.Milliseconds(), "queued"); err != nil {
-		return "", false, fmt.Errorf("insert scheduled run: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schedule_state(name,next_run_at,repository,every_ms,execution_signature) VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET next_run_at=excluded.next_run_at,repository=excluded.repository,every_ms=excluded.every_ms,execution_signature=excluded.execution_signature`, schedule.Name, nowTime.Add(schedule.Every).Format(time.RFC3339Nano), schedule.Repository, schedule.Every.Milliseconds(), signature); err != nil {
-		return "", false, fmt.Errorf("advance shepherd schedule %q: %w", schedule.Name, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return "", false, err
-	}
-	return jobID, true, nil
-}
-
-func shepherdScheduleSignature(schedule config.ResolvedShepherdSchedule) (string, error) {
-	body, err := json.Marshal(struct {
-		MaxActions int                    `json:"max_actions"`
-		Prompt     string                 `json:"prompt"`
-		Command    config.ResolvedCommand `json:"command"`
-	}{schedule.MaxActions, schedule.Prompt, schedule.Command})
-	if err != nil {
-		return "", fmt.Errorf("encode shepherd schedule %q execution settings: %w", schedule.Name, err)
-	}
-	return string(body), nil
 }
 
 func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protocol.RunSpec, error) {
@@ -1077,7 +1006,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.prompt,j.repository,j.github_issue_title,j.command,j.schedule_name,j.trigger_identity,j.occurrence_key,j.trigger_subject,j.state,j.created_at,j.updated_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.prompt,j.repository,j.github_issue_title,j.command,j.trigger_identity,j.occurrence_key,j.trigger_subject,j.state,j.created_at,j.updated_at,
 COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage
 FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_id=r.worker_instance ORDER BY j.created_at DESC`)
 	if err != nil {
@@ -1089,7 +1018,7 @@ FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_
 		job := Job{Runs: []Run{}}
 		var run Run
 		var created, updated, started, completed string
-		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.ScheduleName, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated,
+		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated,
 			&run.ID, &run.Command, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
 			return nil, err
 		}

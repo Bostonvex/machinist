@@ -294,9 +294,6 @@ func (c Config) resolveTriggerSelection(identity string, selection TriggerSelect
 	if err != nil {
 		return "", ResolvedCommand{}, fmt.Errorf("trigger %q: %w", identity, err)
 	}
-	if resolved.Name == "shepherd" {
-		return "", ResolvedCommand{}, fmt.Errorf("trigger %q cannot select Shepherd", identity)
-	}
 	if prompt != "" {
 		resolved, err = RenderPrompt(resolved, prompt)
 		if err != nil {

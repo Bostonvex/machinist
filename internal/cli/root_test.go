@@ -349,39 +349,8 @@ func TestRunExecutesOneAgent(t *testing.T) {
 	}
 }
 
-func TestRunRejectsScheduleOnlyShepherd(t *testing.T) {
+func TestRunExecutesShepherdCommandDirectly(t *testing.T) {
 	workerConfig := writeCLIConfig(t, "success")
-	for _, selection := range [][]string{{"--command=shepherd"}} {
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		args := append([]string{"run"}, selection...)
-		args = append(args,
-			"--prompt=clear the queue",
-			"--repo="+newCLIRepository(t),
-			"--config="+workerConfig,
-		)
-		exitCode := Execute(t.Context(), args, strings.NewReader(""), &stdout, &stderr, "test")
-		if exitCode != 2 || !strings.Contains(stderr.String(), "scheduled Shepherd cannot run directly") {
-			t.Fatalf("selection = %v, exit code = %d, stdout = %q, stderr = %q", selection, exitCode, stdout.String(), stderr.String())
-		}
-		if stdout.Len() != 0 {
-			t.Fatalf("selection = %v executed before rejection: %q", selection, stdout.String())
-		}
-	}
-}
-
-func TestRunAllowsDisposableShepherdWithoutSchedule(t *testing.T) {
-	workerConfig := writeCLIConfig(t, "success")
-	definitionPath := filepath.Join(filepath.Dir(workerConfig), "config.toml")
-	body, err := os.ReadFile(definitionPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body = bytes.ReplaceAll(body, []byte("\n[shepherd.test]\nrepository = \"test\"\nevery = \"15m\"\nmax_actions = 1\n"), nil)
-	if err := os.WriteFile(definitionPath, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{
@@ -852,11 +821,7 @@ func writeCLIConfig(t *testing.T, mode string) string {
 		"[commands.shepherd]\n" +
 		"executor = \"default\"\n" +
 		"prompt_file = \"shepherd.md\"\n" +
-		"timeout = \"5s\"\n\n" +
-		"[shepherd.test]\n" +
-		"repository = \"test\"\n" +
-		"every = \"15m\"\n" +
-		"max_actions = 1\n"
+		"timeout = \"5s\"\n"
 	if err := os.WriteFile(definition, []byte(definitionBody), 0o600); err != nil {
 		t.Fatal(err)
 	}

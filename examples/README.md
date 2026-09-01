@@ -6,8 +6,8 @@ The files at this level are the small default installed by `machinist init`:
 - `worker.toml` shows local Codex and Claude Code executors.
 - `prompts/` contains the editable default prompts.
 
-`config.toml` includes a commented Shepherd schedule. Enable it only after its repository
-name exists in `worker.toml`. Shepherd ensures the repository defines the
+`config.toml` includes a commented cron trigger that schedules Shepherd. Enable it only
+after its repository name exists in `worker.toml`. Shepherd ensures the repository defines the
 `machinist:auto-merge` label, but it never applies the label to a pull request. Unlabelled
 pull requests remain read-only to Shepherd.
 
