@@ -116,9 +116,9 @@ until it reaches a terminal state:
 
 ```python
 import json
+import re
 import subprocess
 import time
-from urllib.parse import urlparse
 
 
 def run(*args: str) -> str:
@@ -131,18 +131,38 @@ def run(*args: str) -> str:
     return result.stdout.strip()
 
 
+def find_task(task_id: str) -> dict | None:
+    cursor = None
+
+    while True:
+        args = ["list", "--json", "--limit", "20"]
+        if cursor:
+            args.extend(["--cursor", cursor])
+
+        payload = json.loads(run(*args))
+        for task in payload["tasks"]:
+            if task["id"] == task_id:
+                return task
+
+        cursor = payload.get("cursor")
+        if not cursor:
+            return None
+
+
 task_url = run(
     "exec",
     "--env", "<ENV_ID>",
     "--branch", "main",
     "Fix the bug, add a regression test, and run the relevant checks",
 )
-task_id = urlparse(task_url).path.rsplit("/", 1)[-1]
+match = re.search(r"https://chatgpt\.com/codex/tasks/(task_[A-Za-z0-9_]+)", task_url)
+if not match:
+    raise RuntimeError(f"Codex cloud did not return a task URL: {task_url}")
+task_id = match.group(1)
 
 while True:
-    payload = json.loads(run("list", "--json", "--limit", "20"))
-    task = next(item for item in payload["tasks"] if item["id"] == task_id)
-    status = task["status"].upper()
+    task = find_task(task_id)
+    status = task["status"].upper() if task else "NOT_LISTED"
 
     if status in {"READY", "FAILED", "CANCELLED"}:
         break
