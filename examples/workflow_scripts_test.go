@@ -137,7 +137,9 @@ case "$1 $2" in
 "repo view") printf '{"nameWithOwner":"owner/repo","defaultBranchRef":{"name":"main"}}\n' ;;
 "api user") printf '{"login":"bot"}\n' ;;
 "pr create") printf 'https://github.com/owner/repo/pull/7\n' ;;
-"pr checks") printf '[{"name":"tests","bucket":"pass","link":""}]\n' ;;
+"pr checks")
+  if [ "$(cat "$GH_STATE")" = 1 ]; then printf 'no checks reported on the branch\n' >&2; exit 1; fi
+  printf '[{"name":"tests","bucket":"pass","link":""}]\n' ;;
 "api graphql")
   count=0; [ ! -f "$GH_STATE" ] || count=$(cat "$GH_STATE"); count=$((count + 1)); printf '%s' "$count" > "$GH_STATE"
   if [ "$count" -eq 1 ]; then

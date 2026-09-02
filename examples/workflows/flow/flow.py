@@ -203,12 +203,26 @@ def collect_feedback(repo: str, number: int, since: datetime, me: str) -> Feedba
         r["state"] == "CHANGES_REQUESTED" for r in latest.values()
     )
 
-    for check in gh_json(["pr", "checks", str(number), "--json", "name,bucket,link"]):
+    for check in checks(number):
         if check["bucket"] == "fail":
             feedback.failing_checks.append(check)
         elif check["bucket"] == "pending":
             feedback.checks_pending = True
     return feedback
+
+
+def checks(number: int) -> list[dict]:
+    # gh pr checks exits non-zero while checks are pending or failing, and before
+    # any check has registered on a fresh push. Only a missing JSON body is an error.
+    result = subprocess.run(
+        ["gh", "pr", "checks", str(number), "--json", "name,bucket,link"],
+        text=True, capture_output=True,
+    )
+    if result.stdout.strip():
+        return json.loads(result.stdout)
+    if "no checks reported" in result.stderr:
+        return [{"name": "checks", "bucket": "pending", "link": ""}]
+    raise RuntimeError(f"gh pr checks failed: {result.stderr.strip()}")
 
 
 def wait_for_feedback(repo: str, number: int, since: datetime, me: str) -> Feedback:
