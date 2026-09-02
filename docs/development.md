@@ -23,6 +23,18 @@ assets allow a direct Go build:
 go build ./...
 ```
 
+## Run locally
+
+Start the control plane and managed worker together:
+
+```sh
+just local
+```
+
+The control plane uses the repository's `examples/config.toml`. The managed
+worker continues to use `~/.machinist/worker.toml` because executors,
+credentials, and repository paths are machine-owned configuration.
+
 ## Verify
 
 Run the complete project check before opening a pull request:
