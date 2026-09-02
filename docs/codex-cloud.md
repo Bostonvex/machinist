@@ -92,6 +92,10 @@ uses the connected GitHub repository and the task's branch to create the pull re
 For a terminal-controlled workflow, apply and verify the diff before pushing it yourself:
 
 ```sh
+test -z "$(git status --porcelain)" || {
+  echo "working tree is not clean" >&2
+  exit 1
+}
 git switch -c codex/fix-control-plane-url
 codex cloud apply <TASK_ID>
 go test ./...
