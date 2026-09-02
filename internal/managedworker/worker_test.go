@@ -238,6 +238,61 @@ func TestCompletionDoesNotRetryPermanentClientError(t *testing.T) {
 	}
 }
 
+func TestManagedWorkerPollsAgainAfterCompletionConflict(t *testing.T) {
+	var polls atomic.Int32
+	polledAgain := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/workers/poll":
+			if polls.Add(1) == 1 {
+				if err := json.NewEncoder(response).Encode(protocol.PollResponse{Run: &protocol.RunSpec{ID: "run-test", LeaseToken: "lease-test"}}); err != nil {
+					t.Errorf("encode poll response: %v", err)
+				}
+				return
+			}
+			close(polledAgain)
+			if err := json.NewEncoder(response).Encode(protocol.PollResponse{}); err != nil {
+				t.Errorf("encode poll response: %v", err)
+			}
+		case "/api/v1/runs/run-test/heartbeat":
+			response.WriteHeader(http.StatusNoContent)
+		case "/api/v1/runs/run-test/complete":
+			http.Error(response, "run lease does not match", http.StatusConflict)
+		default:
+			t.Errorf("unexpected request path %q", request.URL.Path)
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	var stderr strings.Builder
+	worker := &Worker{
+		config:     config.Worker{ControlPlane: config.ControlPlane{URL: server.URL}},
+		instanceID: "worker-test",
+		client:     newClient(server.URL, "secret", server.Client()),
+		stderr:     &stderr,
+		executeRun: func(context.Context, protocol.RunSpec) protocol.Completion {
+			return protocol.Completion{InstanceID: "worker-test", LeaseToken: "lease-test", State: "succeeded"}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	select {
+	case <-polledAgain:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not poll again after completion conflict")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("worker returned error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "machinist: report run run-test: control plane returned HTTP 409 Conflict") {
+		t.Fatalf("completion conflict was not logged: %q", stderr.String())
+	}
+}
+
 func TestManagedWorkerHeartbeatsDuringExecutionAndContinuesAfterFailure(t *testing.T) {
 	if heartbeatInterval != 10*time.Second {
 		t.Fatalf("heartbeat interval = %v", heartbeatInterval)
