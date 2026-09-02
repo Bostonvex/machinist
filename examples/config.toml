@@ -14,6 +14,7 @@ worker_token_file = "~/.machinist/server/worker.token"
 # [routes.implementation]
 # profiles = ["dgx-local", "codex-subscription", "deepseek"]
 # max_attempts = 3
+# max_total_tokens = 150000
 # fallback_on = ["capacity", "rate_limit", "transient"]
 #
 # [commands.implement]

@@ -31,6 +31,12 @@ Run the local, non-mutating tests with:
 python3 -m unittest discover -s evals -p 'test_*.py'
 ```
 
+## Cutover metrics
+
+`evals.cutover_metrics` compares paired Buzz and Machinist measurements and
+turns the speed, token, repair, quality, and unattended-operation targets into
+CI-friendly gates. See [the benchmark contract](../benchmarks/README.md).
+
 ## Shepherd queue smoke test
 
 The Shepherd eval creates a temporary base branch and disposable pull requests in a

@@ -73,7 +73,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 6 {
+	if count != 0 || version != 7 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -84,7 +84,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=7;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=8;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -134,7 +134,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 7 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -184,7 +184,7 @@ func TestOpenStoreUpgradesVersionFourWithoutLosingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
+	if version != 7 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
 		t.Fatalf("version=%d columns=%d cancel=%d jobs=%#v", version, cancellationColumns, cancelRequested, snapshot.Jobs)
 	}
 }
@@ -221,8 +221,55 @@ func TestOpenStoreUpgradesVersionFiveLegacyAttemptBudget(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_attempts FROM runs WHERE job_id=?`, jobID).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || maxAttempts != defaultLegacyMaxAttempts {
+	if version != 7 || maxAttempts != defaultLegacyMaxAttempts {
 		t.Fatalf("version=%d max_attempts=%d", version, maxAttempts)
+	}
+}
+
+func TestOpenStoreUpgradesVersionSixTokenBudgetWithoutLosingJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := store.CreateJob(t.Context(), "preserve token policy", "machinist", "plan", testAgent("plan", "Plan request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	versionSix, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := versionSix.Exec(`ALTER TABLE runs DROP COLUMN max_total_tokens; PRAGMA user_version=6;`); err != nil {
+		versionSix.Close()
+		t.Fatal(err)
+	}
+	if err := versionSix.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var version, budgetColumns int
+	var maxTotalTokens int64
+	if err := upgraded.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgraded.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name='max_total_tokens'`).Scan(&budgetColumns); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgraded.db.QueryRow(`SELECT max_total_tokens FROM runs WHERE job_id=?`, jobID).Scan(&maxTotalTokens); err != nil {
+		t.Fatal(err)
+	}
+	if version != 7 || budgetColumns != 1 || maxTotalTokens != 0 {
+		t.Fatalf("version=%d columns=%d max_total_tokens=%d", version, budgetColumns, maxTotalTokens)
 	}
 }
 
@@ -249,7 +296,7 @@ func TestPollSelectsFirstCompatibleRouteProfile(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
 	command := config.ResolvedCommand{
 		Name: "implement", Route: "implementation", Candidates: []string{"dgx-local", "codex-subscription", "deepseek"},
-		MaxAttempts: 3, FallbackOn: []string{"capacity", "rate_limit"}, Role: "implementer",
+		MaxAttempts: 3, MaxTotalTokens: 100_000, FallbackOn: []string{"capacity", "rate_limit"}, Role: "implementer",
 		Model: "coder", Prompt: "implement request", Timeout: time.Minute,
 	}
 	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
@@ -270,7 +317,7 @@ func TestPollSelectsFirstCompatibleRouteProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run == nil || run.Executor != "dgx-local" || run.Profile != "dgx-local" || run.Route != "implementation" || run.Harness != "opencode" || run.Provider != "openai_compatible" || run.AuthMode != "local" || run.Role != "implementer" || run.MaxAttempts != 3 {
+	if run == nil || run.Executor != "dgx-local" || run.Profile != "dgx-local" || run.Route != "implementation" || run.Harness != "opencode" || run.Provider != "openai_compatible" || run.AuthMode != "local" || run.Role != "implementer" || run.MaxAttempts != 3 || run.MaxTotalTokens != 100_000 {
 		t.Fatalf("run = %#v", run)
 	}
 	snapshot, err := store.Snapshot(t.Context())
@@ -278,8 +325,74 @@ func TestPollSelectsFirstCompatibleRouteProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := snapshot.Jobs[0].Runs[0]
-	if stored.Profile != "dgx-local" || stored.Route != "implementation" || stored.Harness != "opencode" || stored.Provider != "openai_compatible" || stored.Role != "implementer" {
+	if stored.Profile != "dgx-local" || stored.Route != "implementation" || stored.Harness != "opencode" || stored.Provider != "openai_compatible" || stored.Role != "implementer" || stored.MaxTotalTokens != 100_000 {
 		t.Fatalf("stored run = %#v", stored)
+	}
+}
+
+func TestPollDefersLowerPriorityRouteToConnectedPreferredWorker(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	local := pollRequest("worker-local", []string{"local"}, []string{"machinist"})
+	local.Profiles = map[string]protocol.ProfileCapability{
+		"local": {Harness: "deepseek", Provider: "openai_compatible", AuthMode: "local", Available: true},
+	}
+	if run, err := store.Poll(t.Context(), local); err != nil || run != nil {
+		t.Fatalf("register preferred worker = %#v, %v", run, err)
+	}
+
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"local", "api"},
+		MaxAttempts: 2, Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	api := pollRequest("worker-api", []string{"api"}, []string{"machinist"})
+	api.Profiles = map[string]protocol.ProfileCapability{
+		"api": {Harness: "codex", Provider: "openai", AuthMode: "api_key", Available: true},
+	}
+	if run, err := store.Poll(t.Context(), api); err != nil || run != nil {
+		t.Fatalf("lower-priority poll = %#v, %v", run, err)
+	}
+	run, err := store.Poll(t.Context(), local)
+	if err != nil || run == nil || run.Profile != "local" || run.Harness != "deepseek" {
+		t.Fatalf("preferred poll = %#v, %v", run, err)
+	}
+}
+
+func TestPollUsesLowerPriorityRouteWhilePreferredWorkerIsBusy(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	api := pollRequest("worker-api", []string{"api"}, []string{"machinist"})
+	api.Profiles = map[string]protocol.ProfileCapability{
+		"api": {Harness: "codex", Provider: "openai", AuthMode: "api_key", Available: true},
+	}
+	if run, err := store.Poll(t.Context(), api); err != nil || run != nil {
+		t.Fatalf("register fallback worker = %#v, %v", run, err)
+	}
+
+	busyCommand := config.ResolvedCommand{Name: "occupy", Executor: "local", Prompt: "long task", Timeout: time.Minute}
+	if _, err := store.CreateJob(t.Context(), "occupy local", "machinist", "occupy", busyCommand); err != nil {
+		t.Fatal(err)
+	}
+	local := pollRequest("worker-local", []string{"local"}, []string{"machinist"})
+	local.Profiles = map[string]protocol.ProfileCapability{
+		"local": {Harness: "deepseek", Provider: "openai_compatible", AuthMode: "local", Available: true},
+	}
+	occupied, err := store.Poll(t.Context(), local)
+	if err != nil || occupied == nil || occupied.Executor != "local" {
+		t.Fatalf("occupy preferred worker = %#v, %v", occupied, err)
+	}
+
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"local", "api"},
+		MaxAttempts: 2, Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), api)
+	if err != nil || run == nil || run.Profile != "api" || run.Harness != "codex" {
+		t.Fatalf("fallback poll = %#v, %v", run, err)
 	}
 }
 
@@ -337,6 +450,88 @@ func TestRetryCreatesFencedAttemptAndFallsBack(t *testing.T) {
 	}
 	if run.Attempts[0].State != "failed" || run.Attempts[0].ErrorClass != "harness_crash" || run.Attempts[1].State != "succeeded" {
 		t.Fatalf("attempts = %#v", run.Attempts)
+	}
+	if run.DurationMillis == nil || *run.DurationMillis != 40 || run.TokenUsage == nil || *run.TokenUsage != 60 {
+		t.Fatalf("aggregate metrics = duration %v tokens %v", run.DurationMillis, run.TokenUsage)
+	}
+}
+
+func TestRetryStopsAtReportedTokenBudget(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"first", "second", "third"},
+		MaxAttempts: 3, MaxTotalTokens: 100, FallbackOn: []string{"harness_crash"}, Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	request := pollRequest("worker-a", []string{"first", "second", "third"}, []string{"machinist"})
+	first, err := store.Poll(t.Context(), request)
+	if err != nil || first == nil {
+		t.Fatalf("first poll = %#v, %v", first, err)
+	}
+	if err := store.Complete(t.Context(), first.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: first.LeaseToken, AttemptID: first.AttemptID,
+		State: "failed", ExitCode: 1, Error: "first crash", ErrorClass: "harness_crash",
+		Result: []byte(`{"duration_millis":10,"token_usage":80}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Poll(t.Context(), request)
+	if err != nil || second == nil || second.Profile != "second" {
+		t.Fatalf("second poll = %#v, %v", second, err)
+	}
+	if err := store.Complete(t.Context(), second.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: second.LeaseToken, AttemptID: second.AttemptID,
+		State: "failed", ExitCode: 1, Error: "second crash", ErrorClass: "harness_crash",
+		Result: []byte(`{"duration_millis":20,"token_usage":30}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if third, err := store.Poll(t.Context(), request); err != nil || third != nil {
+		t.Fatalf("third poll = %#v, %v", third, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := snapshot.Jobs[0].Runs[0]
+	if run.State != "failed" || run.AttemptCount != 2 || len(run.Attempts) != 2 || run.TokenUsage == nil || *run.TokenUsage != 110 || run.DurationMillis == nil || *run.DurationMillis != 30 {
+		t.Fatalf("budgeted run = %#v", run)
+	}
+	if !strings.Contains(run.Error, "reported token usage 110 reached max_total_tokens 100") {
+		t.Fatalf("budget stop error = %q", run.Error)
+	}
+}
+
+func TestRetryWithTokenBudgetRequiresCompleteUsageCoverage(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"first", "second"},
+		MaxAttempts: 2, MaxTotalTokens: 100, FallbackOn: []string{"harness_crash"}, Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	request := pollRequest("worker-a", []string{"first", "second"}, []string{"machinist"})
+	run, err := store.Poll(t.Context(), request)
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID,
+		State: "failed", ExitCode: 1, Error: "crash", ErrorClass: "harness_crash",
+		Result: []byte(`{"duration_millis":10}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.Jobs[0].Runs[0]
+	if stored.State != "failed" || stored.AttemptCount != 1 || stored.TokenUsage != nil || !strings.Contains(stored.Error, "token usage coverage is incomplete") {
+		t.Fatalf("coverage-gated run = %#v", stored)
 	}
 }
 
@@ -488,6 +683,37 @@ func TestExpiredLeasesStopAtAttemptBudget(t *testing.T) {
 	}
 	if run.Attempts[0].State != "abandoned" || run.Attempts[1].State != "abandoned" || !strings.Contains(run.Error, "attempt budget") {
 		t.Fatalf("exhausted attempts = %#v; error=%q", run.Attempts, run.Error)
+	}
+}
+
+func TestExpiredLeaseWithTokenBudgetStopsWhenUsageIsUnknown(t *testing.T) {
+	clock := newTestClock(time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC))
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	store.now = clock.Now
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"first", "second", "third"},
+		MaxAttempts: 3, MaxTotalTokens: 100, FallbackOn: []string{"transient"}, Prompt: "implement request", Timeout: time.Minute,
+	}
+	jobID, err := store.CreateJob(t.Context(), "bounded", "machinist", "implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := pollRequest("worker-a", []string{"first", "second", "third"}, []string{"machinist"})
+	first, err := store.Poll(t.Context(), request)
+	if err != nil || first == nil {
+		t.Fatalf("first lease = %#v, %v", first, err)
+	}
+	clock.Advance(leaseDuration)
+	if second, err := store.Poll(t.Context(), request); err != nil || second != nil {
+		t.Fatalf("poll after unobservable lease = %#v, %v", second, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := snapshot.Jobs[0].Runs[0]
+	if snapshot.Jobs[0].ID != jobID || snapshot.Jobs[0].State != "failed" || run.State != "failed" || run.AttemptCount != 1 || run.TokenUsage != nil || !strings.Contains(run.Error, "token usage coverage is incomplete") {
+		t.Fatalf("coverage-gated lease recovery = %#v", snapshot.Jobs[0])
 	}
 }
 
@@ -1474,8 +1700,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 6 {
-		t.Fatalf("schema version = %d, %v, want 5", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 7 {
+		t.Fatalf("schema version = %d, %v, want 7", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {

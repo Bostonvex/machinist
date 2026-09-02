@@ -63,11 +63,17 @@ models = { coder = "openai/local-coder" }
 requires_tags = ["dgx-spark"]
 ```
 
-Supported harness identifiers are `codex`, `claude`, `opencode`, `pi`, and
-`generic`. `deepseek` is a provider, not a harness. `subscription` profiles use
-the harness's existing signed-in session; API profiles name a secret environment
-variable but never send its value to the control plane. A non-loopback HTTP
-endpoint is rejected unless `allow_insecure_http = true` is explicitly set.
+Built-in harness identifiers are `codex`, `claude`, `opencode`, `pi`, and
+`generic`, but `harness` accepts any bounded portable identifier. This lets a
+worker register a `deepseek`, `aider`, or organization-specific harness without
+a Machinist release; `command` remains the complete argument-array adapter.
+DeepSeek is normally a provider used through OpenCode or Pi, but a real
+DeepSeek-specific CLI can therefore advertise `harness = "deepseek"` directly.
+Automatic structured-output normalization is used only when Machinist safely
+recognizes the command shape. `subscription` profiles use the harness's existing
+signed-in session; API profiles name a secret environment variable but never
+send its value to the control plane. A non-loopback HTTP endpoint is rejected
+unless `allow_insecure_http = true` is explicitly set.
 
 Profile requirements may use `requires_os`, `requires_arch`, and
 `requires_tags`. Operating system and architecture are detected. Tags are
@@ -83,6 +89,7 @@ Routes make a command portable across subscription, API, and local inference:
 [routes.implementation]
 profiles = ["dgx-local", "codex-subscription", "deepseek"]
 max_attempts = 3
+max_total_tokens = 150000
 fallback_on = ["capacity", "rate_limit", "transient"]
 
 [commands.implement]
@@ -91,11 +98,17 @@ role = "implementer"
 timeout = "90m"
 ```
 
-The control plane chooses the first candidate advertised by the polling worker
-that supports the requested model alias. It persists the route and exact chosen
-profile, harness, provider, authentication mode, and role. Route candidates are
-profile names only; commands, endpoints, credentials, and paths cannot be
-overridden through the API.
+The control plane chooses the first compatible candidate across workers that
+have advertised the repository within the last 15 seconds and are not already
+running a job. For example, an idle connected `dgx-local` worker prevents an
+API-only worker from taking the same routed job. If the local worker is busy or
+no longer connected, the next compatible profile can claim it. A worker that
+has not yet advertised itself cannot be considered, so start persistent
+preferred workers before enabling unattended routes.
+
+The selected route and exact profile, harness, provider, authentication mode,
+and role are persisted. Route candidates are profile names only; commands,
+endpoints, credentials, and paths cannot be overridden through the API.
 
 Each execution is a durable attempt with its own ID and lease fence. A failed
 attempt is retried only when its normalized error class appears in `fallback_on`
@@ -104,9 +117,19 @@ compatible route candidate. Stale attempt or lease completions are rejected.
 On attempts after the first, the worker appends a compact handoff containing only
 the attempt budget and previous error class. It also exposes these as
 `MACHINIST_ATTEMPT_NUMBER`, `MACHINIST_MAX_ATTEMPTS`, and
-`MACHINIST_PREVIOUS_ERROR_CLASS`. It does not replay the previous harness
+`MACHINIST_PREVIOUS_ERROR_CLASS`. A configured token ceiling is exposed as
+`MACHINIST_MAX_TOTAL_TOKENS`. It does not replay the previous harness
 transcript, which limits context growth and avoids leaking error text into a new
 provider.
+
+`max_total_tokens` is an optional aggregate ceiling for a route's attempts. The
+control plane sums reported usage across completed attempts. Once the ceiling is
+reached it stops instead of dispatching another fallback. When a token ceiling is
+configured, missing usage is treated conservatively: the retry is stopped because
+the remaining budget cannot be proven. The original failure and the budget-stop
+reason remain visible in the run detail. Successful and terminal run summaries
+report aggregate duration and tokens across all attempts, not just the final one.
+
 Lease-loss recovery remains compatible with legacy executors while recording an
 abandoned attempt, so interrupted work is visible rather than silently erased.
 Legacy commands without a route receive a bounded two-attempt lease-recovery

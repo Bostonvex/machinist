@@ -164,6 +164,26 @@ requires_tags = ["dgx-spark"]
 	}
 }
 
+func TestLoadWorkerAcceptsCustomHarnessIdentifier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.toml")
+	writeTestFile(t, path, `[profiles.deepseek-cli]
+harness="deepseek"
+provider="deepseek"
+auth_mode="api_key"
+secret_env="DEEPSEEK_API_KEY"
+command=["deepseek-agent", "--model={{machinist.model}}"]
+models={ coder="deepseek-coder" }
+`)
+	worker, err := LoadWorker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := worker.Profiles["deepseek-cli"]
+	if profile.Harness != "deepseek" || profile.Provider != "deepseek" || profile.AuthMode != "api_key" {
+		t.Fatalf("custom profile = %#v", profile)
+	}
+}
+
 func TestLoadWorkerBuildsProviderNeutralTelemetryAliases(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "worker.toml")
@@ -222,6 +242,7 @@ func TestLoadCommandResolvesOrderedRoute(t *testing.T) {
 	writeTestFile(t, path, `[routes.implementation]
 profiles=["local", "codex-subscription", "deepseek"]
 max_attempts=3
+max_total_tokens=100000
 fallback_on=["capacity", "rate_limit", "transient"]
 
 [commands.implement]
@@ -232,7 +253,7 @@ role="implementer"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.Route != "implementation" || command.Executor != "" || command.MaxAttempts != 3 || strings.Join(command.Candidates, ",") != "local,codex-subscription,deepseek" {
+	if command.Route != "implementation" || command.Executor != "" || command.MaxAttempts != 3 || command.MaxTotalTokens != 100000 || strings.Join(command.Candidates, ",") != "local,codex-subscription,deepseek" {
 		t.Fatalf("command = %#v", command)
 	}
 	worker := Worker{Profiles: map[string]Profile{"codex-subscription": {}}}
@@ -244,9 +265,10 @@ role="implementer"
 
 func TestLoadConfigRejectsInvalidRoutes(t *testing.T) {
 	for name, test := range map[string]struct{ route, want string }{
-		"no candidates": {"[routes.test]\nprofiles=[]\n", "between 1 and 8"},
-		"duplicates":    {"[routes.test]\nprofiles=[\"local\",\"local\"]\n", "duplicated"},
-		"bad fallback":  {"[routes.test]\nprofiles=[\"local\"]\nfallback_on=[\"guess\"]\n", "unsupported"},
+		"no candidates":         {"[routes.test]\nprofiles=[]\n", "between 1 and 8"},
+		"duplicates":            {"[routes.test]\nprofiles=[\"local\",\"local\"]\n", "duplicated"},
+		"bad fallback":          {"[routes.test]\nprofiles=[\"local\"]\nfallback_on=[\"guess\"]\n", "unsupported"},
+		"negative token budget": {"[routes.test]\nprofiles=[\"local\"]\nmax_total_tokens=-1\n", "max_total_tokens"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
@@ -260,8 +282,8 @@ func TestLoadConfigRejectsInvalidRoutes(t *testing.T) {
 
 func TestLoadWorkerRejectsUnsafeProfiles(t *testing.T) {
 	for name, test := range map[string]struct{ body, want string }{
-		"unknown harness": {`[profiles.test]
-harness="deepseek"
+		"invalid harness identifier": {`[profiles.test]
+harness="not a harness!"
 auth_mode="local"
 command=["agent"]
 `, "harness"},

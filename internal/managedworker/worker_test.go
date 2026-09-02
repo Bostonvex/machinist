@@ -25,13 +25,13 @@ func TestRetryPromptIsCompactAndOnlyAddedForRetries(t *testing.T) {
 	if got := retryPrompt(prompt, protocol.RunSpec{AttemptNumber: 1, MaxAttempts: 3}); got != prompt {
 		t.Fatalf("first attempt prompt = %q", got)
 	}
-	got := retryPrompt(prompt, protocol.RunSpec{AttemptNumber: 2, MaxAttempts: 3, PreviousErrorClass: "harness_crash"})
-	for _, want := range []string{prompt, "Attempt 2 of 3", "harness_crash", "existing repository state"} {
+	got := retryPrompt(prompt, protocol.RunSpec{AttemptNumber: 2, MaxAttempts: 3, MaxTotalTokens: 100000, PreviousErrorClass: "harness_crash"})
+	for _, want := range []string{prompt, "Attempt 2 of 3", "harness_crash", "reported-token budget: 100000", "existing repository state"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("retry prompt %q does not contain %q", got, want)
 		}
 	}
-	if len(got)-len(prompt) > 240 {
+	if len(got)-len(prompt) > 280 {
 		t.Fatalf("retry handoff is too large: %d bytes", len(got)-len(prompt))
 	}
 }

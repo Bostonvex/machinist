@@ -50,7 +50,7 @@ research or decisions whose value is the shared conversation itself.
 | System of record | SQLite jobs/runs/events | GitHub plus workspace files and channels | GitHub issues, PRs, labels, comments | SQLite execution ledger; GitHub remains product-work ledger | Do not create a second product-planning truth inside Machinist |
 | Work tracking UI | Runs, workers, triggers, commands, basic analytics | Canvas/kanban scripts and channels | GitHub issue/PR state | Built-in work board, run detail, attempt timeline, workers, triggers, commands, analytics, agents/infra | Switch execution tracking to Machinist UI; keep GitHub for issue/PR lifecycle |
 | Agent/infra UI | No deep model or GPU view | Custom observability and DGX dashboard | No hosted dashboard | Read-only collector bridge for agents, turns, tokens, prompt cache, server KV cache, vLLM, GPU/DGX | Reuse the collector; keep high-volume telemetry out of transactional SQLite |
-| Harness support | Any stdin executable, manually configured | Harness and model selected per agent | Runtime adapters for Codex, Claude Code, Cursor, Buzz | Typed `generic`, `codex`, `claude`, `opencode`, and `pi` profiles | Ported as a configurable profile abstraction, not hard-coded vendors |
+| Harness support | Any stdin executable, manually configured | Harness and model selected per agent | Runtime adapters for Codex, Claude Code, Cursor, Buzz | Typed built-ins plus arbitrary portable custom harness identifiers | Ported as a configurable profile abstraction, not hard-coded vendors |
 | Per-role harness/model | Executor/model alias, no role type | Yes, per agent | Yes, role-to-runtime/model/environment binding | Command role plus ordered profile route and model alias | Ported; independent-author/reviewer enforcement remains an ASF concern |
 | Subscription-backed models | Possible through a configured signed-in CLI | Important cost-control path | Depends on bound CLI/runtime | First-class `auth_mode = "subscription"`; CLI session remains worker-local | Ported without relaying session credentials or pretending subscription use is API use |
 | API providers | Per-executor manual setup | Configurable per agent/harness | Runtime-specific | `auth_mode = "api_key"` with a worker-local `secret_env` reference | Ported; secret values never cross the worker boundary |
@@ -59,7 +59,7 @@ research or decisions whose value is the shared conversation itself.
 | Environment awareness | No scheduling facts | Separate Mac/Windows fleets and host-qualified identities | Role environment binding | OS, architecture, native/WSL/container, shell/path style, features, tags, digest | Ported as bounded non-secret facts; only operator tags grant trust |
 | Windows | Unsupported | Win32-specific agents and PowerShell tooling | Generated runtime instructions vary by adapter | Native Windows amd64/arm64 worker, Job Object cancellation, updater, CI and release archives | Ported. Legacy 32-bit x86 Windows is deliberately not targeted |
 | Routing/fallback | Executor and model matching | Human/orchestrator dispatch | Orchestrator role and graph handoffs | Ordered compatible profiles, classified retry allowlist, fallback rotation | Ported for execution failures; semantic role graph stays in ASF/workflow scripts |
-| Retry/repair budget | Lease reclaim can repeat a run | Agent repair loops | `automatic_task_retry` and per-root-cause repair cap | Fenced attempts, `max_attempts`, `fallback_on`, compact retry handoff | Ported; root-cause-aware semantic repair remains workflow-level |
+| Retry/repair budget | Lease reclaim can repeat a run | Agent repair loops | `automatic_task_retry` and per-root-cause repair cap | Fenced attempts, `max_attempts`, aggregate `max_total_tokens`, classified fallback, compact retry handoff | Ported; root-cause-aware semantic repair remains workflow-level |
 | Duplicate/stale protection | Lease token | Claims and GitHub state discipline | Idempotent start/claim markers | Attempt IDs, lease fencing, stale-completion rejection, expired-attempt record | Strengthened in Machinist |
 | Remote stop | Timeout/local cancellation | Human messaging/process management | Escalation protocol | Authenticated job cancellation delivered by heartbeat; process-tree termination | Ported and tested |
 | Context efficiency | Prompt file or submitted prompt | Token habits, written artifacts, avoid repeated context | Generated context packs under about 8 KB; hard limits inline, prose by pointer | Prompt files/pointers plus a small retry-only failure-class handoff | Adopt ASF packs; do not stream Buzz transcript history into every run |
@@ -168,8 +168,9 @@ From ASF:
 ## Cutover plan
 
 1. **Freeze the comparison baseline.** Record the revisions above and capture at
-   least 20 representative accepted Buzz/ASF changes with cycle time, cloud
-   billable tokens, repair attempts, operator touches, and outcome quality.
+   least 20 representative accepted Buzz/ASF changes with cycle time, aggregate
+   reported tokens, repair attempts, operator touches, and outcome quality. Use
+   the fail-closed evaluator in [the cutover benchmark](../benchmarks/README.md).
 2. **Deploy the control plane as a canary.** Back up its database, deploy one
    control plane and one worker, connect the collector read-only, and verify health,
    UI, lease/complete, cancellation, restart, and fail-open telemetry.

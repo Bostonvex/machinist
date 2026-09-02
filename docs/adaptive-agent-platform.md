@@ -30,7 +30,7 @@ The current branch implements the execution-platform portion of this plan:
 
 - environment manifests and worker capability health;
 - typed multi-harness profiles for generic commands, Codex, Claude Code,
-  OpenCode, and Pi;
+  OpenCode, Pi, and arbitrary portable custom harness identifiers;
 - subscription, API-key, DeepSeek, local, and OpenAI-compatible provider
   configurations with worker-local credentials;
 - ordered routes, model aliases, fenced attempts, classified fallback, compact
@@ -39,13 +39,15 @@ The current branch implements the execution-platform portion of this plan:
   and an Agents & infra dashboard inside the Machinist UI;
 - native macOS, Linux, and Windows amd64/arm64 builds, including Windows Job
   Object cancellation and staged self-update;
-- schema migrations through version 6 with data-preservation coverage.
+- schema migrations through version 7 with data-preservation coverage.
 
 The release candidate does not yet contain a native semantic role graph,
 GitHub `FACTORY:RUN` writer, independent-review policy engine, production
-merge/deploy engine, measured Buzz-vs-Machinist benchmark, or automatic
-capacity-based routing. These remain ASF/repository workflow responsibilities
-or pilot gates. See [the source-verified comparison](buzz-asf-comparison.md).
+merge/deploy engine, measured Buzz-vs-Machinist result set, or automatic
+telemetry-based capacity routing. These remain ASF/repository workflow
+responsibilities or pilot gates. The fail-closed paired-task evaluator and
+synthetic format example are in [the cutover benchmark](../benchmarks/README.md).
+See also [the source-verified comparison](buzz-asf-comparison.md).
 
 ## Side-by-side capability matrix
 
@@ -78,8 +80,8 @@ credentials. These concepts must remain distinct:
 - **role**: planner, implementer, reviewer, verifier, or an operator-defined role.
 - **route**: an ordered policy for selecting one or more profiles.
 - **profile**: a worker-local harness/provider/auth combination.
-- **harness**: the executable agent interface (`codex`, `claude`, `opencode`,
-  `pi`, or `generic`).
+- **harness**: the executable agent interface (a built-in such as `codex`,
+  `claude`, `opencode`, `pi`, or `generic`, or a portable custom identifier).
 - **provider**: where inference happens (`openai`, `anthropic`, `deepseek`,
   `ollama`, `openai_compatible`, or another named provider).
 - **model**: an alias exposed by the profile, never an unbounded command value.
@@ -144,6 +146,7 @@ Portable routes belong to the control-plane configuration:
 [routes.implementation]
 profiles = ["dgx-local", "codex-subscription", "deepseek"]
 max_attempts = 3
+max_total_tokens = 150000
 fallback_on = ["capacity", "rate_limit", "transient", "model_unavailable"]
 
 [commands.implement]
@@ -324,7 +327,7 @@ or data-loss incident.
 Measured against the current Buzz/ASF baseline on comparable tasks:
 
 - at least 30% lower median active cycle time;
-- at least 40% lower cloud billable tokens per accepted change;
+- at least 40% lower median reported token usage per accepted change;
 - at least 30% fewer repair/rework attempts per accepted change;
 - at least 90% of policy-eligible low-risk work reaches handoff unattended;
 - zero incompatible dispatches, secret disclosures, stale completion wins, or

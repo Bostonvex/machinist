@@ -42,6 +42,7 @@ type RunSpec struct {
 	Route              string   `json:"route,omitempty"`
 	Candidates         []string `json:"candidates,omitempty"`
 	MaxAttempts        int      `json:"max_attempts,omitempty"`
+	MaxTotalTokens     int64    `json:"max_total_tokens,omitempty"`
 	FallbackOn         []string `json:"fallback_on,omitempty"`
 	Harness            string   `json:"harness,omitempty"`
 	Provider           string   `json:"provider,omitempty"`

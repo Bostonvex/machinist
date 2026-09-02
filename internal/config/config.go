@@ -187,30 +187,32 @@ type Command struct {
 }
 
 type Route struct {
-	Profiles    []string `toml:"profiles"`
-	MaxAttempts int      `toml:"max_attempts"`
-	FallbackOn  []string `toml:"fallback_on"`
+	Profiles       []string `toml:"profiles"`
+	MaxAttempts    int      `toml:"max_attempts"`
+	MaxTotalTokens int64    `toml:"max_total_tokens"`
+	FallbackOn     []string `toml:"fallback_on"`
 }
 
 type ResolvedCommand struct {
-	Name        string
-	Executor    string
-	Profile     string
-	Route       string
-	Candidates  []string
-	MaxAttempts int
-	FallbackOn  []string
-	Harness     string
-	Provider    string
-	AuthMode    string
-	Role        string
-	Environment map[string]string
-	Command     []string
-	Model       string
-	Prompt      string
-	Timeout     time.Duration
-	Definition  string
-	Hash        string
+	Name           string
+	Executor       string
+	Profile        string
+	Route          string
+	Candidates     []string
+	MaxAttempts    int
+	MaxTotalTokens int64
+	FallbackOn     []string
+	Harness        string
+	Provider       string
+	AuthMode       string
+	Role           string
+	Environment    map[string]string
+	Command        []string
+	Model          string
+	Prompt         string
+	Timeout        time.Duration
+	Definition     string
+	Hash           string
 }
 
 func LoadWorker(path string) (Worker, error) {
@@ -558,17 +560,18 @@ func resolveCommand(definitionPath, name string, command Command, routes map[str
 	}
 
 	resolved := ResolvedCommand{
-		Name:        name,
-		Executor:    executionName,
-		Profile:     command.Profile,
-		Route:       command.Route,
-		Candidates:  slices.Clone(route.Profiles),
-		MaxAttempts: route.MaxAttempts,
-		FallbackOn:  slices.Clone(route.FallbackOn),
-		Role:        command.Role,
-		Prompt:      prompt,
-		Timeout:     timeout,
-		Definition:  definitionPath,
+		Name:           name,
+		Executor:       executionName,
+		Profile:        command.Profile,
+		Route:          command.Route,
+		Candidates:     slices.Clone(route.Profiles),
+		MaxAttempts:    route.MaxAttempts,
+		MaxTotalTokens: route.MaxTotalTokens,
+		FallbackOn:     slices.Clone(route.FallbackOn),
+		Role:           command.Role,
+		Prompt:         prompt,
+		Timeout:        timeout,
+		Definition:     definitionPath,
 	}
 	var err error
 	resolved.Hash, err = commandHash(resolved)
@@ -603,6 +606,9 @@ func validateRoutes(routes map[string]Route) error {
 		if route.MaxAttempts == 0 {
 			route.MaxAttempts = 1
 			routes[name] = route
+		}
+		if route.MaxTotalTokens < 0 || route.MaxTotalTokens > 1_000_000_000_000 {
+			return fmt.Errorf("route %q max_total_tokens must be between 0 and 1000000000000", name)
 		}
 		for _, reason := range route.FallbackOn {
 			if !allowedFallbacks[reason] {
@@ -787,8 +793,8 @@ func validateProfile(name string, profile Profile) error {
 		return errors.New("profile names must be non-empty portable identifiers")
 	}
 	profile.Harness = strings.ToLower(strings.TrimSpace(profile.Harness))
-	if !slices.Contains([]string{"generic", "codex", "claude", "opencode", "pi"}, profile.Harness) {
-		return fmt.Errorf("profile %q harness %q is unsupported", name, profile.Harness)
+	if profile.Harness == "" || len(profile.Harness) > 64 || !safeEnvironmentTag(profile.Harness) {
+		return fmt.Errorf("profile %q harness must be a non-empty portable identifier", name)
 	}
 	profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
 	if profile.Provider != "" && (len(profile.Provider) > 64 || !safeEnvironmentTag(profile.Provider)) {
@@ -1052,17 +1058,23 @@ func readBoundedFile(path string, limit int64) ([]byte, error) {
 
 func commandHash(command ResolvedCommand) (string, error) {
 	payload, err := json.Marshal(struct {
-		Name        string        `json:"name"`
-		Executor    string        `json:"executor"`
-		Profile     string        `json:"profile,omitempty"`
-		Route       string        `json:"route,omitempty"`
-		Candidates  []string      `json:"candidates,omitempty"`
-		MaxAttempts int           `json:"max_attempts,omitempty"`
-		FallbackOn  []string      `json:"fallback_on,omitempty"`
-		Role        string        `json:"role,omitempty"`
-		Prompt      string        `json:"prompt"`
-		Timeout     time.Duration `json:"timeout"`
-	}{command.Name, command.Executor, command.Profile, command.Route, command.Candidates, command.MaxAttempts, command.FallbackOn, command.Role, command.Prompt, command.Timeout})
+		Name           string        `json:"name"`
+		Executor       string        `json:"executor"`
+		Profile        string        `json:"profile,omitempty"`
+		Route          string        `json:"route,omitempty"`
+		Candidates     []string      `json:"candidates,omitempty"`
+		MaxAttempts    int           `json:"max_attempts,omitempty"`
+		MaxTotalTokens int64         `json:"max_total_tokens,omitempty"`
+		FallbackOn     []string      `json:"fallback_on,omitempty"`
+		Role           string        `json:"role,omitempty"`
+		Prompt         string        `json:"prompt"`
+		Timeout        time.Duration `json:"timeout"`
+	}{
+		Name: command.Name, Executor: command.Executor, Profile: command.Profile,
+		Route: command.Route, Candidates: command.Candidates, MaxAttempts: command.MaxAttempts,
+		MaxTotalTokens: command.MaxTotalTokens, FallbackOn: command.FallbackOn,
+		Role: command.Role, Prompt: command.Prompt, Timeout: command.Timeout,
+	})
 	if err != nil {
 		return "", fmt.Errorf("encode command definition: %w", err)
 	}
