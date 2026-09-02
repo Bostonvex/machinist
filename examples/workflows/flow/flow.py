@@ -132,9 +132,9 @@ def current_login() -> str:
     return gh_json(["api", "user"])["login"]
 
 
-def create_branch(task: str) -> str:
+def create_branch(task: str, base: str) -> str:
     branch = f"machinist/{slugify(task)}-{int(time.time())}"
-    run(["git", "checkout", "-q", "-b", branch])
+    run(["git", "checkout", "-q", "-b", branch, f"origin/{base}"])
     return branch
 
 
@@ -244,7 +244,7 @@ def flow(task: str, thread: Thread) -> int:
     base = base_branch()
     me = current_login()
     run(["git", "fetch", "-q", "origin", base])
-    branch = create_branch(task)
+    branch = create_branch(task, base)
 
     log(f"implement on {branch} (thread {thread.id})")
     turn(thread, IMPLEMENT_PROMPT.format(branch=branch, task=task))
