@@ -8,6 +8,16 @@ data_directory = "~/.machinist/worker"
 detect = true
 tags = []
 
+# Optional metadata-only telemetry. Both MACHINIST_TELEMETRY_* and the legacy
+# BUZZ_TELEMETRY_* aliases are supplied to instrumented harnesses. The token
+# value and identity salt never enter Machinist configuration or the server.
+# [telemetry]
+# enabled = true
+# url = "http://127.0.0.1:7900/api/v1/events"
+# token_file = "~/.config/buzz-agent-observability/ingest-token"
+# identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+# endpoint_id = "dgx-primary"
+
 [control_plane]
 url = "http://127.0.0.1:7331"
 token_file = "~/.machinist/server/worker.token"

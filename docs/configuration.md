@@ -109,6 +109,30 @@ Current worker classifications are `configuration`, `harness_crash`, `timeout`,
 `capacity`, `transient`, `transport`, `authentication`, `policy`, or
 `model_unavailable`. Unknown or unlisted failures terminate the run.
 
+## Observability
+
+Worker-side telemetry and the control-plane dashboard bridge are independently
+optional. This preserves fail-open execution and permits the collector to keep
+its high-frequency data in a separate database.
+
+```toml
+# worker.toml
+[telemetry]
+enabled = true
+url = "http://127.0.0.1:7900/api/v1/events"
+token_file = "~/.config/buzz-agent-observability/ingest-token"
+identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+endpoint_id = "dgx-primary"
+
+# config.toml
+[observability]
+enabled = true
+url = "http://127.0.0.1:7900"
+```
+
+See [Observability bridge](observability.md) for the privacy boundary,
+compatibility aliases, dashboard metrics, and collector topology.
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`

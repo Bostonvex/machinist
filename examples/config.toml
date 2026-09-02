@@ -4,6 +4,11 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
+# Read-only bridge to the separately versioned telemetry collector dashboard.
+# [observability]
+# enabled = true
+# url = "http://127.0.0.1:7900"
+
 # Routes choose the first compatible, available worker-local profile. A command
 # uses exactly one of executor, profile, or route.
 # [routes.implementation]

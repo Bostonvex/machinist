@@ -39,6 +39,7 @@ type Worker struct {
 	DataDirectory string                `toml:"data_directory"`
 	ControlPlane  ControlPlane          `toml:"control_plane"`
 	Environment   WorkerEnvironment     `toml:"environment"`
+	Telemetry     WorkerTelemetry       `toml:"telemetry"`
 	Executors     map[string]Executor   `toml:"executors"`
 	Profiles      map[string]Profile    `toml:"profiles"`
 	Repositories  map[string]Repository `toml:"repositories"`
@@ -48,6 +49,14 @@ type Worker struct {
 type WorkerEnvironment struct {
 	Detect *bool    `toml:"detect"`
 	Tags   []string `toml:"tags"`
+}
+
+type WorkerTelemetry struct {
+	Enabled          bool   `toml:"enabled"`
+	URL              string `toml:"url"`
+	TokenFile        string `toml:"token_file"`
+	IdentitySaltFile string `toml:"identity_salt_file"`
+	EndpointID       string `toml:"endpoint_id"`
 }
 
 func (e WorkerEnvironment) DetectionEnabled() bool {
@@ -99,12 +108,18 @@ type Server struct {
 }
 
 type Config struct {
-	Server   Server             `toml:"server"`
-	Commands map[string]Command `toml:"commands"`
-	Routes   map[string]Route   `toml:"routes"`
-	GitHub   GitHub             `toml:"github"`
-	Triggers TriggerDefinitions `toml:"triggers"`
-	path     string
+	Server        Server             `toml:"server"`
+	Observability Observability      `toml:"observability"`
+	Commands      map[string]Command `toml:"commands"`
+	Routes        map[string]Route   `toml:"routes"`
+	GitHub        GitHub             `toml:"github"`
+	Triggers      TriggerDefinitions `toml:"triggers"`
+	path          string
+}
+
+type Observability struct {
+	Enabled bool   `toml:"enabled"`
+	URL     string `toml:"url"`
 }
 
 type GitHub struct {
@@ -246,6 +261,9 @@ func LoadConfig(path string) (Config, error) {
 	machinistConfig.Server.configDir = filepath.Dir(machinistConfig.path)
 	machinistConfig.Server, err = applyServerDefaults(machinistConfig.Server)
 	if err != nil {
+		return Config{}, err
+	}
+	if err := applyObservabilityDefaults(&machinistConfig.Observability); err != nil {
 		return Config{}, err
 	}
 	return machinistConfig, nil
@@ -391,6 +409,29 @@ func (w Worker) WorkerToken() (string, error) {
 		return "", err
 	}
 	return readToken(path)
+}
+
+// TelemetryEnvironment returns only collector configuration references. Token
+// and identity-salt contents are read by the observer, never by Machinist.
+func (w Worker) TelemetryEnvironment() map[string]string {
+	if !w.Telemetry.Enabled {
+		return nil
+	}
+	values := map[string]string{
+		"MACHINIST_TELEMETRY_ENABLED":            "1",
+		"MACHINIST_TELEMETRY_URL":                w.Telemetry.URL,
+		"MACHINIST_TELEMETRY_TOKEN_FILE":         w.Telemetry.TokenFile,
+		"MACHINIST_TELEMETRY_IDENTITY_SALT_FILE": w.Telemetry.IdentitySaltFile,
+		"MACHINIST_TELEMETRY_ENDPOINT_ID":        w.Telemetry.EndpointID,
+	}
+	// Existing Buzz observers use these names. Keeping aliases here lets the
+	// collector remain separately versioned while integrations migrate.
+	values["BUZZ_TELEMETRY_ENABLED"] = values["MACHINIST_TELEMETRY_ENABLED"]
+	values["BUZZ_TELEMETRY_URL"] = values["MACHINIST_TELEMETRY_URL"]
+	values["BUZZ_TELEMETRY_TOKEN_FILE"] = values["MACHINIST_TELEMETRY_TOKEN_FILE"]
+	values["BUZZ_TELEMETRY_IDENTITY_SALT_FILE"] = values["MACHINIST_TELEMETRY_IDENTITY_SALT_FILE"]
+	values["BUZZ_TELEMETRY_ENDPOINT_ID"] = values["MACHINIST_TELEMETRY_ENDPOINT_ID"]
+	return values
 }
 
 func (w Worker) ExecutorNames() []string {
@@ -655,6 +696,9 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		return Worker{}, fmt.Errorf("resolve worker data directory: %w", err)
 	}
 	worker.DataDirectory = filepath.Clean(worker.DataDirectory)
+	if err := applyWorkerTelemetryDefaults(&worker); err != nil {
+		return Worker{}, err
+	}
 	worker.Environment.Tags = normaliseEnvironmentTags(worker.Environment.Tags)
 	if len(worker.Environment.Tags) > 32 {
 		return Worker{}, errors.New("environment tags cannot exceed 32 items")
@@ -706,6 +750,36 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		worker.Profiles[name] = profile
 	}
 	return worker, nil
+}
+
+func applyWorkerTelemetryDefaults(worker *Worker) error {
+	if !worker.Telemetry.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(worker.Telemetry.URL) == "" {
+		worker.Telemetry.URL = "http://127.0.0.1:7900/api/v1/events"
+	}
+	parsed, err := url.Parse(worker.Telemetry.URL)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" || parsed.Path != "/api/v1/events" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("telemetry.url must be the collector's literal loopback http://127.0.0.1 URL ending in /api/v1/events")
+	}
+	for label, configured := range map[string]*string{
+		"token_file": &worker.Telemetry.TokenFile, "identity_salt_file": &worker.Telemetry.IdentitySaltFile,
+	} {
+		if strings.TrimSpace(*configured) == "" {
+			return fmt.Errorf("telemetry.%s is required when telemetry is enabled", label)
+		}
+		resolved, err := resolveConfigPath(*configured, worker.configDir)
+		if err != nil {
+			return fmt.Errorf("resolve telemetry.%s: %w", label, err)
+		}
+		*configured = resolved
+	}
+	worker.Telemetry.EndpointID = strings.ToLower(strings.TrimSpace(worker.Telemetry.EndpointID))
+	if worker.Telemetry.EndpointID == "" || len(worker.Telemetry.EndpointID) > 64 || !safeEnvironmentTag(worker.Telemetry.EndpointID) {
+		return errors.New("telemetry.endpoint_id must be a non-empty portable identifier")
+	}
+	return nil
 }
 
 func validateProfile(name string, profile Profile) error {
@@ -863,6 +937,22 @@ func applyServerDefaults(server Server) (Server, error) {
 	}
 	server.WorkerTokenFile = tokenPath
 	return server, nil
+}
+
+func applyObservabilityDefaults(observability *Observability) error {
+	if !observability.Enabled {
+		observability.URL = ""
+		return nil
+	}
+	if strings.TrimSpace(observability.URL) == "" {
+		observability.URL = "http://127.0.0.1:7900"
+	}
+	parsed, err := url.Parse(observability.URL)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" || (parsed.Path != "" && parsed.Path != "/") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("observability.url must be a literal loopback http://127.0.0.1 origin")
+	}
+	observability.URL = strings.TrimSuffix(parsed.String(), "/")
+	return nil
 }
 
 func validateCommand(name string, command []string) error {

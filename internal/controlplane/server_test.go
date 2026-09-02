@@ -726,6 +726,59 @@ func TestServerCancellationAlwaysStopsHTTPServer(t *testing.T) {
 	}
 }
 
+func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
+	want := map[string]string{
+		"/healthz":                  `{"status":"ok","events":12,"journal_mode":"wal"}`,
+		"/api/v1/summary":           `{"fleet":{"active_agents":1,"turn_count":2}}`,
+		"/api/v1/agents?limit=100":  `{"agents":[{"id":"agent-1"}]}`,
+		"/api/v1/turns?limit=100":   `{"turns":[]}`,
+		"/api/v1/samples?limit=500": `{"samples":[]}`,
+	}
+	collector := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, ok := want[request.URL.RequestURI()]
+		if !ok {
+			t.Errorf("unexpected collector request %q", request.URL.RequestURI())
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(response, body)
+	}))
+	defer collector.Close()
+	directory := t.TempDir()
+	definitionPath := filepath.Join(directory, "config.toml")
+	if err := os.WriteFile(definitionPath, []byte("[commands.plan]\nexecutor=\"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
+	server, err := NewServerWithOptions(store, definitionPath, "secret", 0, ServerOptions{ObservabilityURL: collector.URL, HTTPClient: collector.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webServer := httptest.NewServer(server.Handler())
+	defer webServer.Close()
+	response, err := http.Get(webServer.URL + "/api/v1/observability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var body observabilityResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Enabled || !body.Available || len(body.Health) == 0 || len(body.Summary) == 0 || len(body.Agents) == 0 || len(body.Turns) == 0 || len(body.Samples) == 0 {
+		t.Fatalf("observability = %#v", body)
+	}
+}
+
+func TestObservabilityProxyRejectsRemoteOrCredentialedURL(t *testing.T) {
+	for _, value := range []string{"https://collector.example", "http://user:pass@127.0.0.1:7900", "http://localhost:7900"} {
+		if _, err := validateObservabilityURL(value); err == nil {
+			t.Fatalf("URL %q was accepted", value)
+		}
+	}
+}
+
 func TestServerForcesCloseWhenGracefulShutdownTimesOut(t *testing.T) {
 	server, webServer := newTestHTTPServer(t)
 	defer webServer.Close()

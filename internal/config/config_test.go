@@ -164,6 +164,47 @@ requires_tags = ["dgx-spark"]
 	}
 }
 
+func TestLoadWorkerBuildsProviderNeutralTelemetryAliases(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "worker.toml")
+	writeTestFile(t, path, `name="telemetry-worker"
+data_directory="state"
+[telemetry]
+enabled=true
+url="http://127.0.0.1:7900/api/v1/events"
+token_file="collector.token"
+identity_salt_file="identity.salt"
+endpoint_id="DGX-Primary"
+`)
+	worker, err := LoadWorker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := worker.TelemetryEnvironment()
+	if worker.Telemetry.EndpointID != "dgx-primary" || values["MACHINIST_TELEMETRY_URL"] != values["BUZZ_TELEMETRY_URL"] || values["MACHINIST_TELEMETRY_TOKEN_FILE"] != filepath.Join(directory, "collector.token") || values["BUZZ_TELEMETRY_IDENTITY_SALT_FILE"] != filepath.Join(directory, "identity.salt") {
+		t.Fatalf("telemetry = %#v, environment = %#v", worker.Telemetry, values)
+	}
+	for name, value := range values {
+		if strings.Contains(name, "TOKEN") && strings.Contains(value, "secret-value") {
+			t.Fatalf("telemetry environment contains token value: %s", name)
+		}
+	}
+}
+
+func TestLoadWorkerRejectsNonLoopbackTelemetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.toml")
+	writeTestFile(t, path, `[telemetry]
+enabled=true
+url="https://collector.example/api/v1/events"
+token_file="collector.token"
+identity_salt_file="identity.salt"
+endpoint_id="remote"
+`)
+	if _, err := LoadWorker(path); err == nil || !strings.Contains(err.Error(), "literal loopback") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestLoadCommandAcceptsProfileAndRole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	writeTestFile(t, path, "[commands.implement]\nprofile=\"local\"\nrole=\"Implementer\"\n")

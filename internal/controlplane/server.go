@@ -29,6 +29,8 @@ const maxCompletionBytes = 96 << 20
 
 const maxRequestBytes = 1 << 20
 
+const maxObservabilityResponseBytes = 1 << 20
+
 const workerAvailabilityWindow = 15 * time.Second
 
 //go:embed web/dist/* web/dist/assets/*
@@ -47,6 +49,24 @@ type Server struct {
 	workerToken       string
 	csrfToken         string
 	handler           http.Handler
+	observabilityURL  string
+	observabilityHTTP *http.Client
+}
+
+type ServerOptions struct {
+	ObservabilityURL string
+	HTTPClient       *http.Client
+}
+
+type observabilityResponse struct {
+	Enabled   bool            `json:"enabled"`
+	Available bool            `json:"available"`
+	Error     string          `json:"error,omitempty"`
+	Health    json.RawMessage `json:"health,omitempty"`
+	Summary   json.RawMessage `json:"summary,omitempty"`
+	Agents    json.RawMessage `json:"agents,omitempty"`
+	Turns     json.RawMessage `json:"turns,omitempty"`
+	Samples   json.RawMessage `json:"samples,omitempty"`
 }
 
 type statusResponse struct {
@@ -81,8 +101,25 @@ type catalogResponse struct {
 }
 
 func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJobs int) (*Server, error) {
+	return NewServerWithOptions(store, definitionPath, workerToken, maxConcurrentJobs, ServerOptions{})
+}
+
+func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxConcurrentJobs int, options ServerOptions) (*Server, error) {
 	if maxConcurrentJobs < 0 {
 		return nil, errors.New("max concurrent jobs cannot be negative")
+	}
+	observabilityURL, err := validateObservabilityURL(options.ObservabilityURL)
+	if err != nil {
+		return nil, err
+	}
+	observabilityHTTP := options.HTTPClient
+	if observabilityHTTP == nil {
+		observabilityHTTP = &http.Client{
+			Timeout: 3 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return errors.New("observability redirects are disabled")
+			},
+		}
 	}
 	csrfToken, err := randomID("csrf", 24)
 	if err != nil {
@@ -109,6 +146,7 @@ func NewServer(store *Store, definitionPath, workerToken string, maxConcurrentJo
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
+		observabilityURL: observabilityURL, observabilityHTTP: observabilityHTTP,
 	}
 	server.handler, err = server.routes()
 	if err != nil {
@@ -253,6 +291,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/definitions", s.definitions)
+	mux.HandleFunc("GET /api/v1/observability", s.observability)
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
@@ -260,6 +299,100 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 	return securityHeaders(mux), nil
+}
+
+func validateObservabilityURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" || (parsed.Path != "" && parsed.Path != "/") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("observability URL must be a literal loopback http://127.0.0.1 origin")
+	}
+	return strings.TrimSuffix(parsed.String(), "/"), nil
+}
+
+func (s *Server) observability(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if s.observabilityURL == "" {
+		writeJSON(response, http.StatusOK, observabilityResponse{Enabled: false})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+	defer cancel()
+	type query struct {
+		name string
+		path string
+	}
+	type result struct {
+		name string
+		body json.RawMessage
+		err  error
+	}
+	queries := []query{
+		{name: "health", path: "/healthz"},
+		{name: "summary", path: "/api/v1/summary"},
+		{name: "agents", path: "/api/v1/agents?limit=100"},
+		{name: "turns", path: "/api/v1/turns?limit=100"},
+		{name: "samples", path: "/api/v1/samples?limit=500"},
+	}
+	results := make(chan result, len(queries))
+	for _, item := range queries {
+		go func() {
+			body, err := s.fetchObservability(ctx, item.path)
+			results <- result{name: item.name, body: body, err: err}
+		}()
+	}
+	payload := observabilityResponse{Enabled: true, Available: true}
+	for range queries {
+		item := <-results
+		if item.err != nil {
+			payload.Available = false
+			payload.Error = "observability collector unavailable or returned invalid data"
+			continue
+		}
+		switch item.name {
+		case "health":
+			payload.Health = item.body
+		case "summary":
+			payload.Summary = item.body
+		case "agents":
+			payload.Agents = item.body
+		case "turns":
+			payload.Turns = item.body
+		case "samples":
+			payload.Samples = item.body
+		}
+	}
+	writeJSON(response, http.StatusOK, payload)
+}
+
+func (s *Server) fetchObservability(ctx context.Context, path string) (json.RawMessage, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.observabilityURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := s.observabilityHTTP.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("collector returned %s", response.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxObservabilityResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxObservabilityResponseBytes {
+		return nil, errors.New("collector response exceeds limit")
+	}
+	if !json.Valid(body) {
+		return nil, errors.New("collector response is not JSON")
+	}
+	return body, nil
 }
 
 func (s *Server) definitions(response http.ResponseWriter, request *http.Request) {
