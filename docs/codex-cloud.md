@@ -164,7 +164,7 @@ while True:
     task = find_task(task_id)
     status = task["status"].upper() if task else "NOT_LISTED"
 
-    if status in {"READY", "FAILED", "CANCELLED"}:
+    if status in {"READY", "APPLIED", "ERROR"}:
         break
 
     time.sleep(10)
