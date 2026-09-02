@@ -20,7 +20,8 @@ Environment:
   FLOW_POLL_INTERVAL   seconds between GitHub polls (default: 60)
   FLOW_BASE_BRANCH     pull request base (default: repository default branch)
   FLOW_SANDBOX         Codex sandbox: read-only, workspace-write, full-access
-                       (default: workspace-write)
+                       (default: full-access, because the thread must reach GitHub
+                       to reply in review threads; Machinist workers are isolated)
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from openai_codex.types import TurnStatus
 MAX_ROUNDS = int(os.environ.get("FLOW_MAX_ROUNDS", "3"))
 FEEDBACK_WAIT = int(os.environ.get("FLOW_FEEDBACK_WAIT", "1800"))
 POLL_INTERVAL = int(os.environ.get("FLOW_POLL_INTERVAL", "60"))
-SANDBOX = Sandbox(os.environ.get("FLOW_SANDBOX", Sandbox.workspace_write.value))
+SANDBOX = Sandbox(os.environ.get("FLOW_SANDBOX", Sandbox.full_access.value))
 
 IMPLEMENT_PROMPT = """You are working in a Git repository on branch {branch}.
 
@@ -100,7 +101,7 @@ Then run the tests, commit if you changed anything, and stop. Do not push.
 @dataclass
 class Feedback:
     threads: list[dict] = field(default_factory=list)
-    changes_requested: list[str] = field(default_factory=list)
+    changes_requested: list[dict] = field(default_factory=list)
     failing_checks: list[dict] = field(default_factory=list)
     approved: bool = False
     checks_pending: bool = False
@@ -171,6 +172,8 @@ def current_login() -> str:
 
 
 def create_branch(task: str, base: str) -> str:
+    if run(["git", "status", "--porcelain"]).strip():
+        raise RuntimeError("worktree has uncommitted changes from an earlier run; clean it first")
     branch = f"machinist/{slugify(task)}-{int(time.time())}"
     run(["git", "checkout", "-q", "-b", branch, f"origin/{base}"])
     return branch
@@ -181,8 +184,10 @@ def rev(ref: str) -> str:
 
 
 def push(branch: str) -> datetime:
+    # Take the cursor before pushing so feedback posted while the push is in flight counts.
+    cursor = datetime.now(timezone.utc)
     run(["git", "push", "-q", "-u", "origin", branch])
-    return datetime.now(timezone.utc)
+    return cursor
 
 
 def open_pull_request(branch: str, base: str, title: str, body: str) -> str:
@@ -202,10 +207,10 @@ def collect_feedback(repo: str, number: int, since: datetime, me: str) -> Feedba
           reviewThreads(last: 100) {
             nodes {
                 id isResolved path line
-              comments(first: 50) { nodes { author { login } body createdAt url } }
+              comments(last: 50) { nodes { author { login } body createdAt url } }
             }
           }
-          reviews(last: 50) { nodes { author { login } state submittedAt } }
+          reviews(last: 50) { nodes { author { login } state body submittedAt } }
         }
       }
     }
@@ -236,13 +241,14 @@ def collect_feedback(repo: str, number: int, since: datetime, me: str) -> Feedba
             latest[login] = review
     for login, review in latest.items():
         if review["state"] == "CHANGES_REQUESTED" and parse_time(review["submittedAt"]) > since:
-            feedback.changes_requested.append(login)
-    feedback.approved = any(r["state"] == "APPROVED" for r in latest.values()) and not any(
-        r["state"] == "CHANGES_REQUESTED" for r in latest.values()
-    )
+            feedback.changes_requested.append({"login": login, "body": review.get("body") or ""})
+    # An approval only counts if it was given after the current head was pushed.
+    feedback.approved = any(
+        r["state"] == "APPROVED" and parse_time(r["submittedAt"]) > since for r in latest.values()
+    ) and not any(r["state"] == "CHANGES_REQUESTED" for r in latest.values())
 
     for check in checks(number):
-        if check["bucket"] == "fail":
+        if check["bucket"] in ("fail", "cancel"):
             feedback.failing_checks.append(check)
         elif check["bucket"] == "pending":
             feedback.checks_pending = True
@@ -280,8 +286,10 @@ def describe(feedback: Feedback) -> str:
     lines: list[str] = []
     for check in feedback.failing_checks:
         lines.append(f"- Failing check: {check['name']} ({check['link']})")
-    for login in feedback.changes_requested:
-        lines.append(f"- {login} requested changes")
+    for review in feedback.changes_requested:
+        lines.append(f"- {review['login']} requested changes")
+        if review["body"].strip():
+            lines.append("    " + review["body"].strip().replace("\n", "\n    "))
     for thread in feedback.threads:
         location = f"{thread['path']}:{thread['line']}" if thread["line"] else thread["path"]
         lines.append(f"- Review thread {thread['id']} at {location} ({thread['comments'][0]['url']})")

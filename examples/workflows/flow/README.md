@@ -17,7 +17,7 @@ context from implementation through every repair.
 5. Push and go back to step 3, at most `FLOW_MAX_ROUNDS` times, then wait once more for the
    verdict on the last push.
 
-The loop ends with exit 0 when the pull request is approved with green checks, when no new
+The loop ends with exit 0 when the pull request is approved after its latest push with green checks, when no new
 feedback arrives within `FLOW_FEEDBACK_WAIT` seconds, or when the thread decides nothing
 needs to change. It ends with exit 1 when feedback is still open after the last round. The
 last push is the only cursor, so the script keeps no state on disk and a rerun starts from
@@ -42,6 +42,11 @@ the worker must already be logged in to Codex. To lock the resolved dependency n
 
 Token usage is written to `MACHINIST_TOKEN_USAGE_PATH`, so Machinist records it for the run
 the same way it does for a direct Codex executor.
+
+The thread runs with Codex's full-access sandbox by default because it must reach GitHub to
+reply in review threads. Machinist workers are isolated machines, which is what makes that
+acceptable; set `FLOW_SANDBOX=workspace-write` if your Codex config grants network access
+another way.
 
 ## Run it
 
