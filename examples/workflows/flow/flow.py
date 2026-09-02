@@ -333,9 +333,10 @@ def flow(task: str, thread: Thread) -> int:
         log(f"address feedback: round {round_number}/{MAX_ROUNDS}")
         turn(thread, FEEDBACK_PROMPT.format(url=url, feedback=describe(feedback)))
         if rev("HEAD") == rev(f"origin/{branch}"):
-            log("agent replied without code changes; waiting for a verdict")
-            since = datetime.now(timezone.utc)
-            continue
+            # The thread answered every item without changing code. Its replies are on the
+            # PR for people to weigh; polling again would only hand it the same items.
+            log("agent replied without code changes; leaving the pull request for people")
+            return 0
         since = push(branch)
 
     raise AssertionError("unreachable")
