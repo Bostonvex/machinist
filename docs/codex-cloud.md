@@ -173,7 +173,7 @@ while True:
 
     time.sleep(10)
 
-if status != "READY":
+if status not in {"READY", "APPLIED"}:
     raise RuntimeError(f"Codex cloud task ended with {status}")
 
 print(run("diff", task_id))
