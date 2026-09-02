@@ -19,14 +19,19 @@ func terminateProcessTree(process *os.Process) error {
 		return nil
 	}
 	err := syscall.Kill(-process.Pid, syscall.SIGKILL)
-	if ignorableProcessTreeTerminationError(err) {
+	if ignorableProcessTreeTerminationError(err, func() error {
+		return syscall.Kill(-process.Pid, 0)
+	}) {
 		return nil
 	}
 	return err
 }
 
-func ignorableProcessTreeTerminationError(err error) bool {
-	return errors.Is(err, syscall.ESRCH) || runtime.GOOS == "darwin" && errors.Is(err, syscall.EPERM)
+func ignorableProcessTreeTerminationError(err error, probeProcessGroup func() error) bool {
+	if errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	return runtime.GOOS == "darwin" && errors.Is(err, syscall.EPERM) && errors.Is(probeProcessGroup(), syscall.ESRCH)
 }
 
 func processExitCode(state *os.ProcessState) int {
