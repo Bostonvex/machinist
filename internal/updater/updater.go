@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -88,7 +87,7 @@ func Update(ctx context.Context, options Options) (Result, error) {
 	if version == options.Current {
 		return Result{Version: version, AlreadyCurrent: true}, nil
 	}
-	if options.GOOS != "linux" && options.GOOS != "darwin" {
+	if options.GOOS != "linux" && options.GOOS != "darwin" && options.GOOS != "windows" {
 		return Result{}, fmt.Errorf("unsupported operating system %q", options.GOOS)
 	}
 	if options.GOARCH != "amd64" && options.GOARCH != "arm64" {
@@ -114,7 +113,7 @@ func Update(ctx context.Context, options Options) (Result, error) {
 	if !strings.EqualFold(hex.EncodeToString(got[:]), want) {
 		return Result{}, fmt.Errorf("checksum mismatch for %s", archiveName)
 	}
-	binary, err := extractBinary(archive)
+	binary, err := extractBinary(archive, options.GOOS)
 	if err != nil {
 		return Result{}, err
 	}
@@ -186,7 +185,7 @@ func checksumFor(checksums []byte, archiveName string) (string, error) {
 	return "", fmt.Errorf("checksums.txt does not contain %s", archiveName)
 }
 
-func extractBinary(archive []byte) ([]byte, error) {
+func extractBinary(archive []byte, goos string) ([]byte, error) {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, fmt.Errorf("open release archive: %w", err)
@@ -201,7 +200,11 @@ func extractBinary(archive []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read release archive: %w", err)
 		}
-		if header.Name != "machinist" || !header.FileInfo().Mode().IsRegular() {
+		binaryName := "machinist"
+		if goos == "windows" {
+			binaryName += ".exe"
+		}
+		if header.Name != binaryName || !header.FileInfo().Mode().IsRegular() {
 			continue
 		}
 		if header.Size < 1 || header.Size > maxBinarySize {
@@ -213,42 +216,5 @@ func extractBinary(archive []byte) ([]byte, error) {
 		}
 		return binary, nil
 	}
-	return nil, errors.New("release archive does not contain machinist")
-}
-
-func replaceExecutable(path string, binary []byte) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("inspect current executable: %w", err)
-	}
-	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".machinist-update-*")
-	if err != nil {
-		return fmt.Errorf("create update beside %s: %w", path, err)
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	mode := info.Mode().Perm()
-	if mode&0o111 == 0 {
-		mode = 0o755
-	}
-	if err := temporary.Chmod(mode); err != nil {
-		temporary.Close()
-		return fmt.Errorf("set update permissions: %w", err)
-	}
-	if _, err := temporary.Write(binary); err != nil {
-		temporary.Close()
-		return fmt.Errorf("write update: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return fmt.Errorf("sync update: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close update: %w", err)
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
+	return nil, errors.New("release archive does not contain the Machinist binary")
 }

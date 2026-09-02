@@ -359,6 +359,46 @@ func TestManagedWorkerHeartbeatsDuringExecutionAndContinuesAfterFailure(t *testi
 	}
 }
 
+func TestManagedWorkerCancelsExecutionWhenHeartbeatRequestsIt(t *testing.T) {
+	heartbeats := make(chan protocol.Heartbeat, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var heartbeat protocol.Heartbeat
+		if err := json.NewDecoder(request.Body).Decode(&heartbeat); err != nil {
+			t.Errorf("decode heartbeat: %v", err)
+		}
+		heartbeats <- heartbeat
+		_ = json.NewEncoder(response).Encode(protocol.HeartbeatResponse{CancelRequested: true})
+	}))
+	defer server.Close()
+
+	ticks := make(chan time.Time, 1)
+	started := make(chan struct{})
+	worker := &Worker{
+		config: config.Worker{ControlPlane: config.ControlPlane{URL: server.URL}}, instanceID: "worker-test",
+		client: newClient(server.URL, "secret", server.Client()), stderr: io.Discard, heartbeatTicks: ticks,
+		executeRun: func(ctx context.Context, _ protocol.RunSpec) protocol.Completion {
+			close(started)
+			<-ctx.Done()
+			return protocol.Completion{State: "cancelled", ExitCode: 130}
+		},
+	}
+	done := make(chan protocol.Completion, 1)
+	go func() {
+		done <- worker.executeWithHeartbeats(t.Context(), protocol.RunSpec{ID: "run-test", LeaseToken: "lease-test"})
+	}()
+	<-started
+	ticks <- time.Time{}
+	<-heartbeats
+	select {
+	case completion := <-done:
+		if completion.State != "cancelled" || completion.ExitCode != 130 {
+			t.Fatalf("completion = %#v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not cancel execution after heartbeat response")
+	}
+}
+
 func TestManagedWorkerHeartbeatsUntilCompletionIsAcknowledged(t *testing.T) {
 	heartbeats := make(chan protocol.Heartbeat, 2)
 	completionStarted := make(chan struct{})

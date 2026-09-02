@@ -81,12 +81,44 @@ jobs:
           test -x bin/machinist
           test "$(bin/machinist version)" = "ci"
 
+  windows:
+    name: Windows checks
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: true
+      - name: Confirm toolchain
+        shell: pwsh
+        run: if ((go env GOVERSION) -ne "go1.26.6") { throw "unexpected Go version" }
+      - name: Compile every Go test package
+        run: go test -run '^$' ./...
+      - name: Run platform-neutral Go tests
+        run: go test ./internal/config ./internal/controlplane ./internal/environment ./internal/harness ./internal/protocol ./internal/triggers ./internal/updater
+      - name: Test Windows process trees and worker cancellation
+        shell: pwsh
+        run: |
+          go test ./internal/runner -run '^TestWindowsProcessTreeJobTerminatesCommand$'
+          go test ./internal/managedworker -run '^TestManagedWorkerCancelsExecutionWhenHeartbeatRequestsIt$'
+      - name: Build Machinist
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          go build -trimpath -ldflags="-X main.version=ci" -o bin/machinist.exe ./cmd/machinist
+          if ((./bin/machinist.exe version) -ne "ci") { throw "version check failed" }
+
   check:
     name: check
     if: always()
     needs:
       - linux
       - macos
+      - windows
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -94,6 +126,8 @@ jobs:
         env:
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           test "$LINUX_RESULT" = success
           test "$MACOS_RESULT" = success
+          test "$WINDOWS_RESULT" = success

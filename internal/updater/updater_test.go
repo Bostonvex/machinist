@@ -16,7 +16,7 @@ import (
 
 func TestUpdateInstallsLatestVerifiedRelease(t *testing.T) {
 	binary := []byte("new machinist")
-	archive := testArchive(t, binary)
+	archive := testArchive(t, binary, "machinist")
 	digest := sha256.Sum256(archive)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -61,7 +61,7 @@ func TestUpdateInstallsLatestVerifiedRelease(t *testing.T) {
 }
 
 func TestUpdateChecksumFailureLeavesExecutableUntouched(t *testing.T) {
-	archive := testArchive(t, []byte("new machinist"))
+	archive := testArchive(t, []byte("new machinist"), "machinist")
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
 		case strings.HasSuffix(request.URL.Path, "/checksums.txt"):
@@ -100,6 +100,43 @@ func TestUpdateChecksumFailureLeavesExecutableUntouched(t *testing.T) {
 	}
 }
 
+func TestUpdateAcceptsWindowsReleaseArchive(t *testing.T) {
+	binary := []byte("windows machinist")
+	archive := testArchive(t, binary, "machinist.exe")
+	digest := sha256.Sum256(archive)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/downloads/v1.2.3/checksums.txt":
+			fmt.Fprintf(response, "%x  machinist_1.2.3_windows_amd64.tar.gz\n", digest)
+		case "/downloads/v1.2.3/machinist_1.2.3_windows_amd64.tar.gz":
+			response.Write(archive)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	executable := filepath.Join(t.TempDir(), "machinist.exe")
+	if err := os.WriteFile(executable, []byte("old machinist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Update(t.Context(), Options{
+		Version: "v1.2.3", Current: "v1.0.0", Executable: executable,
+		GOOS: "windows", GOARCH: "amd64", Client: server.Client(),
+		ReleaseBase: server.URL + "/downloads",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, binary) {
+		t.Fatalf("installed binary = %q", got)
+	}
+}
+
 func TestUpdateRejectsInvalidVersionBeforeNetworkAccess(t *testing.T) {
 	executable := filepath.Join(t.TempDir(), "machinist")
 	if err := os.WriteFile(executable, []byte("old"), 0o755); err != nil {
@@ -128,12 +165,12 @@ func TestUpdateReportsCurrentVersionWithoutDownloadingAssets(t *testing.T) {
 	}
 }
 
-func testArchive(t *testing.T, binary []byte) []byte {
+func testArchive(t *testing.T, binary []byte, name string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
-	if err := tarWriter.WriteHeader(&tar.Header{Name: "machinist", Mode: 0o755, Size: int64(len(binary))}); err != nil {
+	if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(binary))}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tarWriter.Write(binary); err != nil {

@@ -151,6 +151,29 @@ func TestServerDeletesOnlyTerminalJobsWithSubmissionAuthorization(t *testing.T) 
 	}
 }
 
+func TestServerCancelsJobWithSubmissionAuthorization(t *testing.T) {
+	server, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+	jobID, err := server.store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized := postJSON(t, webServer.URL+"/api/v1/jobs/"+jobID+"/cancel", nil, nil)
+	if unauthorized.StatusCode != http.StatusForbidden {
+		t.Fatalf("unauthorized cancel status = %d", unauthorized.StatusCode)
+	}
+	unauthorized.Body.Close()
+	authorized := postJSON(t, webServer.URL+"/api/v1/jobs/"+jobID+"/cancel", nil, map[string]string{"Authorization": "Bearer secret"})
+	if authorized.StatusCode != http.StatusNoContent {
+		t.Fatalf("cancel status = %d", authorized.StatusCode)
+	}
+	authorized.Body.Close()
+	snapshot, err := server.store.Snapshot(t.Context())
+	if err != nil || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != "cancelled" {
+		t.Fatalf("snapshot after cancel = %#v, %v", snapshot, err)
+	}
+}
+
 func TestServerAppliesConcurrentJobLimitToWorkerPolls(t *testing.T) {
 	server, webServer := newTestHTTPServerWithLimit(t, 1)
 	defer webServer.Close()
@@ -565,7 +588,7 @@ func TestHeartbeatEndpointAuthenticatesAndRejectsInvalidLeases(t *testing.T) {
 	}
 	validHeartbeat := protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: polled.Run.LeaseToken}
 	renewed := postJSON(t, webServer.URL+"/api/v1/runs/"+polled.Run.ID+"/heartbeat", validHeartbeat, auth)
-	if renewed.StatusCode != http.StatusNoContent {
+	if renewed.StatusCode != http.StatusOK {
 		t.Fatalf("valid heartbeat status = %d", renewed.StatusCode)
 	}
 	renewed.Body.Close()

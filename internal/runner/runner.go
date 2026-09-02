@@ -196,6 +196,12 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("start command %q: %w", executorCommand[0], err))
 	}
+	if err := registerProcessTree(command.Process); err != nil {
+		closeFiles(stdinReader, stdinWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
+		_ = terminateProcessTree(command.Process)
+		_, _ = command.Process.Wait()
+		return completeFailure(&result, log, runDirectory, fmt.Errorf("register command process tree: %w", err))
+	}
 	closeFiles(stdinReader, stdoutWriter, stderrWriter)
 	if err := log.append("process.started", "", fmt.Sprintf("pid=%d", command.Process.Pid)); err != nil {
 		_ = stdinWriter.Close()

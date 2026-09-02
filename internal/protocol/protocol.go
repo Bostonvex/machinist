@@ -58,6 +58,10 @@ type Heartbeat struct {
 	LeaseToken string `json:"lease_token"`
 }
 
+type HeartbeatResponse struct {
+	CancelRequested bool `json:"cancel_requested"`
+}
+
 type Completion struct {
 	InstanceID string          `json:"instance_id"`
 	LeaseToken string          `json:"lease_token"`

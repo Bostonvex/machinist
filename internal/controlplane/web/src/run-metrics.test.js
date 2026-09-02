@@ -174,7 +174,7 @@ test("board cards are compact links while list rows retain model and usage", asy
   assert.match(runRow, /tokens/);
 });
 
-test("task detail provides deletion and complete run metadata", async () => {
+test("task detail provides cancellation, deletion, and complete run metadata", async () => {
   const source = await readFile(new URL("./main.jsx", import.meta.url), "utf8");
   const taskDetail = source.match(/function TaskDetail[\s\S]+?function DetailMetric/)?.[0];
   assert.ok(taskDetail);
@@ -182,6 +182,9 @@ test("task detail provides deletion and complete run metadata", async () => {
     assert.match(taskDetail, new RegExp(label));
   }
   assert.match(source, /method: "DELETE"/);
+  assert.match(source, /method: "POST"/);
+  assert.match(source, /\/cancel/);
   assert.match(source, /"X-Machinist-CSRF": status\.csrf_token/);
+  assert.match(source, /Stop task/);
   assert.match(source, /Delete task/);
 });

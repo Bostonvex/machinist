@@ -35,9 +35,9 @@ const leaseDuration = 30 * time.Second
 const maxTriggerErrorLength = 2000
 
 // reclaimExpiredLeasesSQL returns running runs whose lease lapsed to the queue.
-const reclaimExpiredLeasesSQL = `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL,current_attempt_id='' WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`
+const reclaimExpiredLeasesSQL = `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL,current_attempt_id='' WHERE state='running' AND cancel_requested=0 AND (lease_expires_at IS NULL OR lease_expires_at<=?)`
 
-const abandonExpiredAttemptsSQL = `UPDATE attempts SET state='abandoned',error='worker lease expired',error_class='transient',completed_at=? WHERE state='running' AND run_id IN (SELECT id FROM runs WHERE state='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?))`
+const abandonExpiredAttemptsSQL = `UPDATE attempts SET state='abandoned',error='worker lease expired',error_class='transient',completed_at=? WHERE state='running' AND run_id IN (SELECT id FROM runs WHERE state='running' AND cancel_requested=0 AND (lease_expires_at IS NULL OR lease_expires_at<=?))`
 
 type Store struct {
 	db  *sql.DB
@@ -60,28 +60,29 @@ type Job struct {
 }
 
 type Run struct {
-	ID             string    `json:"id"`
-	Command        string    `json:"command"`
-	Executor       string    `json:"executor"`
-	Profile        string    `json:"profile,omitempty"`
-	Route          string    `json:"route,omitempty"`
-	Harness        string    `json:"harness,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	AuthMode       string    `json:"auth_mode,omitempty"`
-	Role           string    `json:"role,omitempty"`
-	AttemptCount   int       `json:"attempt_count"`
-	MaxAttempts    int       `json:"max_attempts"`
-	LastErrorClass string    `json:"last_error_class,omitempty"`
-	Attempts       []Attempt `json:"attempts"`
-	Model          string    `json:"model,omitempty"`
-	State          string    `json:"state"`
-	WorkerName     string    `json:"worker_name,omitempty"`
-	ExitCode       *int      `json:"exit_code,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	StartedAt      time.Time `json:"started_at,omitempty"`
-	CompletedAt    time.Time `json:"completed_at,omitempty"`
-	DurationMillis *int64    `json:"duration_millis,omitempty"`
-	TokenUsage     *int64    `json:"token_usage,omitempty,string"`
+	ID              string    `json:"id"`
+	Command         string    `json:"command"`
+	Executor        string    `json:"executor"`
+	Profile         string    `json:"profile,omitempty"`
+	Route           string    `json:"route,omitempty"`
+	Harness         string    `json:"harness,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	AuthMode        string    `json:"auth_mode,omitempty"`
+	Role            string    `json:"role,omitempty"`
+	AttemptCount    int       `json:"attempt_count"`
+	MaxAttempts     int       `json:"max_attempts"`
+	LastErrorClass  string    `json:"last_error_class,omitempty"`
+	Attempts        []Attempt `json:"attempts"`
+	Model           string    `json:"model,omitempty"`
+	State           string    `json:"state"`
+	WorkerName      string    `json:"worker_name,omitempty"`
+	ExitCode        *int      `json:"exit_code,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	CompletedAt     time.Time `json:"completed_at,omitempty"`
+	DurationMillis  *int64    `json:"duration_millis,omitempty"`
+	TokenUsage      *int64    `json:"token_usage,omitempty,string"`
+	CancelRequested bool      `json:"cancel_requested,omitempty"`
 }
 
 type Attempt struct {
@@ -206,7 +207,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 4
+	const schemaVersion = 5
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -238,6 +239,12 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 		if err := s.upgradeToVersionFour(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 4: %w", err)
 		}
+		version = 4
+	}
+	if version == 4 {
+		if err := s.upgradeToVersionFive(ctx); err != nil {
+			return fmt.Errorf("upgrade database schema to version 5: %w", err)
+		}
 	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -258,7 +265,7 @@ CREATE TABLE IF NOT EXISTS runs (
  candidate_profiles TEXT NOT NULL DEFAULT '[]', max_attempts INTEGER NOT NULL DEFAULT 1,
 	 fallback_on TEXT NOT NULL DEFAULT '[]', current_attempt_id TEXT NOT NULL DEFAULT '',
 	 attempt_count INTEGER NOT NULL DEFAULT 0, last_error_class TEXT NOT NULL DEFAULT '',
-	 next_candidate INTEGER NOT NULL DEFAULT 0);
+	 next_candidate INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS runs_dispatch ON runs(state, job_id);
 CREATE TABLE IF NOT EXISTS workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL, environment_json TEXT NOT NULL DEFAULT '{}', profiles_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS worker_repositories (worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE, repository TEXT NOT NULL, PRIMARY KEY(worker_instance,repository));
@@ -277,7 +284,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identi
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=4;`
+PRAGMA user_version=5;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -377,6 +384,33 @@ func (s *Store) upgradeToVersionFour(ctx context.Context) error {
  duration_millis INTEGER, token_usage INTEGER, UNIQUE(run_id,ordinal));
 CREATE INDEX IF NOT EXISTS attempts_run ON attempts(run_id,ordinal);
 PRAGMA user_version=4;`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) upgradeToVersionFive(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var runsTable int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='runs'`).Scan(&runsTable); err != nil {
+		return err
+	}
+	if runsTable > 0 {
+		var present int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name='cancel_requested'`).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version=5`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -908,6 +942,9 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at,environment_json,profiles_json) VALUES(?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at,environment_json=excluded.environment_json,profiles_json=excluded.profiles_json`, request.InstanceID, request.Name, now, string(environmentJSON), string(profilesJSON)); err != nil {
 		return nil, fmt.Errorf("update worker: %w", err)
 	}
+	if _, err := finalizeExpiredCancellations(ctx, tx, nowTime); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, abandonExpiredAttemptsSQL, now, nowTime.UnixNano()); err != nil {
 		return nil, fmt.Errorf("abandon expired attempts: %w", err)
 	}
@@ -1033,8 +1070,9 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 	var jobID, state, instanceID, leaseToken, startedAt, triggerIdentity, triggerGeneration string
 	var currentAttemptID, profile, candidateProfiles, fallbackOn string
 	var attemptCount, maxAttempts int
+	var cancelRequested bool
 	var leaseExpiresAt sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_generation_id,''),r.current_attempt_id,r.profile,r.candidate_profiles,r.fallback_on,r.attempt_count,r.max_attempts FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerGeneration, &currentAttemptID, &profile, &candidateProfiles, &fallbackOn, &attemptCount, &maxAttempts); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT r.job_id,r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,COALESCE(r.started_at,''),COALESCE(j.trigger_identity,''),COALESCE(j.trigger_generation_id,''),r.current_attempt_id,r.profile,r.candidate_profiles,r.fallback_on,r.attempt_count,r.max_attempts,r.cancel_requested FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.id=?`, runID).Scan(&jobID, &state, &instanceID, &leaseToken, &leaseExpiresAt, &startedAt, &triggerIdentity, &triggerGeneration, &currentAttemptID, &profile, &candidateProfiles, &fallbackOn, &attemptCount, &maxAttempts, &cancelRequested); err != nil {
 		return err
 	}
 	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(completion.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(completion.LeaseToken)) != 1 {
@@ -1051,6 +1089,12 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 	}
 	if !leaseExpiresAt.Valid || leaseExpiresAt.Int64 <= s.now().UTC().UnixNano() {
 		return ErrLeaseConflict
+	}
+	if cancelRequested {
+		completion.State = "cancelled"
+		completion.ExitCode = 130
+		completion.ErrorClass = "cancelled"
+		completion.Error = "cancelled by operator"
 	}
 	if !terminalRunState(completion.State) {
 		return fmt.Errorf("%w: invalid terminal run state %q", ErrInvalidCompletion, completion.State)
@@ -1110,7 +1154,11 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 			}
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE id=?`, now, jobID); err != nil {
+		jobState := "failed"
+		if completion.State == "cancelled" {
+			jobState = "cancelled"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,updated_at=? WHERE id=?`, jobState, now, jobID); err != nil {
 			return err
 		}
 		if triggerIdentity != "" {
@@ -1119,7 +1167,11 @@ func (s *Store) Complete(ctx context.Context, runID string, completion protocol.
 				latestError = "triggered job " + completion.State
 			}
 			latestError = boundedTriggerError(latestError)
-			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_job_state='failed',last_job_error=?,health='failed',latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, latestError, latestError, now, triggerIdentity, triggerGeneration); err != nil {
+			health := "failed"
+			if completion.State == "cancelled" {
+				health = "healthy"
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_job_state=?,last_job_error=?,health=?,latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, jobState, latestError, health, latestError, now, triggerIdentity, triggerGeneration); err != nil {
 				return fmt.Errorf("record trigger failure: %w", err)
 			}
 		}
@@ -1166,40 +1218,81 @@ func nextRouteCandidate(candidateJSON, profile string) (int, error) {
 	return 0, nil
 }
 
-func (s *Store) Heartbeat(ctx context.Context, runID string, heartbeat protocol.Heartbeat) error {
+func (s *Store) Heartbeat(ctx context.Context, runID string, heartbeat protocol.Heartbeat) (protocol.HeartbeatResponse, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	defer tx.Rollback()
+	var state, instanceID, leaseToken string
+	var cancelRequested bool
+	var leaseExpiresAt sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT state,COALESCE(worker_instance,''),COALESCE(lease_token,''),lease_expires_at,cancel_requested FROM runs WHERE id=?`, runID).Scan(&state, &instanceID, &leaseToken, &leaseExpiresAt, &cancelRequested); err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	if state != "running" {
+		return protocol.HeartbeatResponse{}, ErrRunState
+	}
+	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(heartbeat.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(heartbeat.LeaseToken)) != 1 {
+		return protocol.HeartbeatResponse{}, ErrLeaseConflict
+	}
+	now := s.now().UTC()
+	if !leaseExpiresAt.Valid || leaseExpiresAt.Int64 <= now.UnixNano() {
+		return protocol.HeartbeatResponse{}, ErrLeaseConflict
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET lease_expires_at=? WHERE id=? AND state='running' AND worker_instance=? AND lease_token=?`, now.Add(leaseDuration).UnixNano(), runID, heartbeat.InstanceID, heartbeat.LeaseToken)
+	if err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	if changed != 1 {
+		return protocol.HeartbeatResponse{}, ErrLeaseConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_seen_at=? WHERE instance_id=?`, now.Format(time.RFC3339Nano), heartbeat.InstanceID); err != nil {
+		return protocol.HeartbeatResponse{}, fmt.Errorf("update worker heartbeat: %w", err)
+	}
+	return protocol.HeartbeatResponse{CancelRequested: cancelRequested}, tx.Commit()
+}
+
+func (s *Store) CancelJob(ctx context.Context, jobID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var state, instanceID, leaseToken string
-	var leaseExpiresAt sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT state,COALESCE(worker_instance,''),COALESCE(lease_token,''),lease_expires_at FROM runs WHERE id=?`, runID).Scan(&state, &instanceID, &leaseToken, &leaseExpiresAt); err != nil {
+	var state, triggerIdentity, triggerGeneration string
+	if err := tx.QueryRowContext(ctx, `SELECT state,trigger_identity,trigger_generation_id FROM jobs WHERE id=?`, jobID).Scan(&state, &triggerIdentity, &triggerGeneration); err != nil {
 		return err
 	}
-	if state != "running" {
-		return ErrRunState
+	if terminalJobState(state) {
+		return tx.Commit()
 	}
-	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(heartbeat.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(heartbeat.LeaseToken)) != 1 {
-		return ErrLeaseConflict
-	}
-	now := s.now().UTC()
-	if !leaseExpiresAt.Valid || leaseExpiresAt.Int64 <= now.UnixNano() {
-		return ErrLeaseConflict
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE runs SET lease_expires_at=? WHERE id=? AND state='running' AND worker_instance=? AND lease_token=?`, now.Add(leaseDuration).UnixNano(), runID, heartbeat.InstanceID, heartbeat.LeaseToken)
-	if err != nil {
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	const reason = "cancelled by operator"
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET state='cancelled',cancel_requested=1,exit_code=130,error=?,last_error_class='cancelled',completed_at=? WHERE job_id=? AND state='queued'`, reason, now, jobID); err != nil {
 		return err
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET cancel_requested=1 WHERE job_id=? AND state='running'`, jobID); err != nil {
 		return err
 	}
-	if changed != 1 {
-		return ErrLeaseConflict
+	var running int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE job_id=? AND state='running'`, jobID).Scan(&running); err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_seen_at=? WHERE instance_id=?`, now.Format(time.RFC3339Nano), heartbeat.InstanceID); err != nil {
-		return fmt.Errorf("update worker heartbeat: %w", err)
+	if running == 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='cancelled',updated_at=? WHERE id=?`, now, jobID); err != nil {
+			return err
+		}
+		if triggerIdentity != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_job_state='cancelled',last_job_error=?,health='healthy',latest_error=?,updated_at=? WHERE identity=? AND generation_id=?`, reason, reason, now, triggerIdentity, triggerGeneration); err != nil {
+				return err
+			}
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE jobs SET updated_at=? WHERE id=?`, now, jobID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1237,6 +1330,10 @@ func (s *Store) ReclaimExpiredLeases(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback()
 	now := s.now().UTC()
+	cancelled, err := finalizeExpiredCancellations(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, abandonExpiredAttemptsSQL, now.Format(time.RFC3339Nano), now.UnixNano()); err != nil {
 		return 0, fmt.Errorf("abandon expired attempts: %w", err)
 	}
@@ -1251,7 +1348,30 @@ func (s *Store) ReclaimExpiredLeases(ctx context.Context) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return reclaimed, nil
+	return reclaimed + cancelled, nil
+}
+
+func finalizeExpiredCancellations(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
+	completedAt := now.Format(time.RFC3339Nano)
+	expiresAt := now.UnixNano()
+	const reason = "cancelled by operator after worker lease expired"
+	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET state='cancelled',exit_code=130,error=?,error_class='cancelled',completed_at=? WHERE state='running' AND run_id IN (SELECT id FROM runs WHERE state='running' AND cancel_requested=1 AND (lease_expires_at IS NULL OR lease_expires_at<=?))`, reason, completedAt, expiresAt); err != nil {
+		return 0, fmt.Errorf("cancel expired attempts: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='cancelled',exit_code=130,error=?,last_error_class='cancelled',completed_at=?,lease_token=NULL,lease_expires_at=NULL,current_attempt_id='' WHERE state='running' AND cancel_requested=1 AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, reason, completedAt, expiresAt)
+	if err != nil {
+		return 0, fmt.Errorf("cancel expired runs: %w", err)
+	}
+	cancelled, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if cancelled > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='cancelled',updated_at=? WHERE state='running' AND id IN (SELECT job_id FROM runs WHERE state='cancelled' AND cancel_requested=1)`, completedAt); err != nil {
+			return 0, fmt.Errorf("cancel jobs after worker lease expiry: %w", err)
+		}
+	}
+	return cancelled, nil
 }
 
 func (s *Store) PruneSupersededWorkers(ctx context.Context, seenAfter time.Time) (int64, error) {
@@ -1361,7 +1481,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.prompt,j.repository,j.github_issue_title,j.command,j.trigger_identity,j.occurrence_key,j.trigger_subject,j.state,j.created_at,j.updated_at,
-COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.profile,''),COALESCE(r.route,''),COALESCE(r.harness,''),COALESCE(r.provider,''),COALESCE(r.auth_mode,''),COALESCE(r.role,''),COALESCE(r.attempt_count,0),COALESCE(r.max_attempts,1),COALESCE(r.last_error_class,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage
+COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.profile,''),COALESCE(r.route,''),COALESCE(r.harness,''),COALESCE(r.provider,''),COALESCE(r.auth_mode,''),COALESCE(r.role,''),COALESCE(r.attempt_count,0),COALESCE(r.max_attempts,1),COALESCE(r.last_error_class,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage,COALESCE(r.cancel_requested,0)
 FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_id=r.worker_instance ORDER BY j.created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1373,7 +1493,7 @@ FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_
 		var run Run
 		var created, updated, started, completed string
 		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated,
-			&run.ID, &run.Command, &run.Executor, &run.Profile, &run.Route, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &run.AttemptCount, &run.MaxAttempts, &run.LastErrorClass, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
+			&run.ID, &run.Command, &run.Executor, &run.Profile, &run.Route, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &run.AttemptCount, &run.MaxAttempts, &run.LastErrorClass, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage, &run.CancelRequested); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -1585,7 +1705,7 @@ func terminalRunState(state string) bool {
 }
 
 func terminalJobState(state string) bool {
-	return state == "succeeded" || state == "failed"
+	return state == "succeeded" || state == "failed" || state == "cancelled"
 }
 
 func validateOutcome(state string, exitCode int) error {

@@ -27,7 +27,7 @@ func TestEscapedDescendantHelper(t *testing.T) {
 	if os.Getenv("MACHINIST_TEST_HOLD_STDIN") != "1" {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	}
-	if _, err := syscall.Setsid(); err != nil {
+	if err := escapeProcessGroup(); err != nil {
 		os.Exit(2)
 	}
 	marker := os.Getenv("MACHINIST_TEST_MARKER")

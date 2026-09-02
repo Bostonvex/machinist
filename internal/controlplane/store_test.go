@@ -73,7 +73,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 4 {
+	if count != 0 || version != 5 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -84,7 +84,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=5;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=6;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -134,7 +134,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 5 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -428,7 +428,7 @@ func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 
 	clock.Advance(5 * time.Second)
 	heartbeat := protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: first.LeaseToken}
-	if err := store.Heartbeat(t.Context(), first.ID, heartbeat); err != nil {
+	if _, err := store.Heartbeat(t.Context(), first.ID, heartbeat); err != nil {
 		t.Fatal(err)
 	}
 	assertLeaseExpiry(t, store, first.ID, clock.Now().Add(leaseDuration))
@@ -439,16 +439,16 @@ func TestStoreRenewsAndRedispatchesExpiredLease(t *testing.T) {
 	if lastSeen != clock.Now().Format(time.RFC3339Nano) {
 		t.Fatalf("worker last seen = %q, want %q", lastSeen, clock.Now().Format(time.RFC3339Nano))
 	}
-	if err := store.Heartbeat(t.Context(), first.ID, protocol.Heartbeat{InstanceID: "worker-b", LeaseToken: first.LeaseToken}); !errors.Is(err, ErrLeaseConflict) {
+	if _, err := store.Heartbeat(t.Context(), first.ID, protocol.Heartbeat{InstanceID: "worker-b", LeaseToken: first.LeaseToken}); !errors.Is(err, ErrLeaseConflict) {
 		t.Fatalf("cross-worker heartbeat error = %v", err)
 	}
-	if err := store.Heartbeat(t.Context(), first.ID, protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: "stale"}); !errors.Is(err, ErrLeaseConflict) {
+	if _, err := store.Heartbeat(t.Context(), first.ID, protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: "stale"}); !errors.Is(err, ErrLeaseConflict) {
 		t.Fatalf("stale heartbeat error = %v", err)
 	}
 	assertLeaseExpiry(t, store, first.ID, clock.Now().Add(leaseDuration))
 
 	clock.Advance(leaseDuration)
-	if err := store.Heartbeat(t.Context(), first.ID, heartbeat); !errors.Is(err, ErrLeaseConflict) {
+	if _, err := store.Heartbeat(t.Context(), first.ID, heartbeat); !errors.Is(err, ErrLeaseConflict) {
 		t.Fatalf("expired heartbeat error = %v", err)
 	}
 	staleCompletion := protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0, Result: []byte(`{"stale":true}`)}
@@ -667,6 +667,58 @@ func TestStoreDeletesTerminalJobAndRejectsActiveJob(t *testing.T) {
 	snapshot, err := store.Snapshot(t.Context())
 	if err != nil || len(snapshot.Jobs) != 0 {
 		t.Fatalf("snapshot = %#v, %v", snapshot, err)
+	}
+}
+
+func TestCancelQueuedJobIsTerminalAndNeverDispatched(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelJob(t.Context(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run != nil {
+		t.Fatalf("poll after cancellation = %#v, %v", run, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != "cancelled" || len(snapshot.Jobs[0].Runs) != 1 || snapshot.Jobs[0].Runs[0].State != "cancelled" || snapshot.Jobs[0].Runs[0].ExitCode == nil || *snapshot.Jobs[0].Runs[0].ExitCode != 130 {
+		t.Fatalf("cancelled snapshot = %#v", snapshot)
+	}
+}
+
+func TestCancelRunningJobSignalsWorkerAndOverridesRacingSuccess(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	jobID, err := store.CreateJob(t.Context(), "request", "machinist", "plan", testAgent("plan", "Plan request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.CancelJob(t.Context(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat, err := store.Heartbeat(t.Context(), run.ID, protocol.Heartbeat{InstanceID: "worker-a", LeaseToken: run.LeaseToken})
+	if err != nil || !heartbeat.CancelRequested {
+		t.Fatalf("heartbeat after cancellation = %#v, %v", heartbeat, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, State: "succeeded", ExitCode: 0}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.Jobs[0]
+	if stored.State != "cancelled" || stored.Runs[0].State != "cancelled" || stored.Runs[0].LastErrorClass != "cancelled" || len(stored.Runs[0].Attempts) != 1 || stored.Runs[0].Attempts[0].State != "cancelled" {
+		t.Fatalf("completion after cancellation = %#v", stored)
 	}
 }
 
@@ -1294,8 +1346,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
-		t.Fatalf("schema version = %d, %v, want 4", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 5 {
+		t.Fatalf("schema version = %d, %v, want 5", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {

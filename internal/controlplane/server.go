@@ -293,6 +293,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/definitions", s.definitions)
 	mux.HandleFunc("GET /api/v1/observability", s.observability)
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.authorizeSubmission(s.cancelJob))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
@@ -531,6 +532,19 @@ func (s *Server) deleteJob(response http.ResponseWriter, request *http.Request) 
 	response.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) cancelJob(response http.ResponseWriter, request *http.Request) {
+	err := s.store.CancelJob(request.Context(), request.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(response, http.StatusNotFound, errors.New("job not found"))
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 	if !limitRequestBody(response, request, maxRequestBytes) {
 		return
@@ -599,7 +613,7 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		writeError(response, http.StatusBadRequest, errors.New("instance_id and lease_token are required"))
 		return
 	}
-	err := s.store.Heartbeat(request.Context(), request.PathValue("id"), input)
+	result, err := s.store.Heartbeat(request.Context(), request.PathValue("id"), input)
 	if errors.Is(err, ErrLeaseConflict) || errors.Is(err, ErrRunState) {
 		writeError(response, http.StatusConflict, err)
 		return
@@ -612,7 +626,7 @@ func (s *Server) heartbeat(response http.ResponseWriter, request *http.Request) 
 		writeError(response, http.StatusBadRequest, err)
 		return
 	}
-	response.WriteHeader(http.StatusNoContent)
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (s *Server) authorizeWorker(next http.HandlerFunc) http.HandlerFunc {

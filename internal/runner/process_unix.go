@@ -14,6 +14,10 @@ func configureProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+func registerProcessTree(*os.Process) error {
+	return nil
+}
+
 func terminateProcessTree(process *os.Process) error {
 	if process == nil {
 		return nil

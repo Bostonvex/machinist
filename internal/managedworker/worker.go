@@ -88,24 +88,26 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) executeWithHeartbeats(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
 	execute := w.executeRun
 	if execute == nil {
 		execute = w.execute
 	}
-	return withHeartbeats(ctx, w, spec, "", func() protocol.Completion { return execute(ctx, spec) })
+	return withHeartbeats(ctx, w, spec, "", cancel, func() protocol.Completion { return execute(runContext, spec) })
 }
 
 func (w *Worker) deliverWithHeartbeats(ctx context.Context, spec protocol.RunSpec, completion protocol.Completion) error {
-	if err := w.heartbeat(ctx, spec); err != nil {
+	if _, err := w.heartbeat(ctx, spec); err != nil {
 		fmt.Fprintf(w.stderr, "machinist: heartbeat run %s before completion: %v\n", spec.ID, err)
 	}
-	return withHeartbeats(ctx, w, spec, " during completion", func() error { return w.deliver(ctx, spec.ID, completion) })
+	return withHeartbeats(ctx, w, spec, " during completion", nil, func() error { return w.deliver(ctx, spec.ID, completion) })
 }
 
 // withHeartbeats runs work in the background and keeps the run lease alive
 // until it returns. Cancellation does not abandon the work; the work observes
 // ctx itself and its result is always returned.
-func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec, phase string, work func() T) T {
+func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec, phase string, cancelWork context.CancelFunc, work func() T) T {
 	ticks := w.heartbeatTicks
 	if ticks == nil {
 		ticker := time.NewTicker(heartbeatInterval)
@@ -119,8 +121,12 @@ func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec
 		case result := <-done:
 			return result
 		case <-ticks:
-			if err := w.heartbeat(ctx, spec); err != nil {
+			result, err := w.heartbeat(ctx, spec)
+			if err != nil {
 				fmt.Fprintf(w.stderr, "machinist: heartbeat run %s%s: %v\n", spec.ID, phase, err)
+			} else if result.CancelRequested && cancelWork != nil {
+				cancelWork()
+				cancelWork = nil
 			}
 		case <-ctx.Done():
 			return <-done
@@ -188,6 +194,26 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		completion.ErrorClass = "configuration"
 		return completion
 	}
+	if command.Environment == nil {
+		command.Environment = make(map[string]string)
+	}
+	for name, value := range w.config.TelemetryEnvironment() {
+		command.Environment[name] = value
+	}
+	for name, value := range map[string]string{
+		"MACHINIST_JOB_ID": spec.JobID, "MACHINIST_ATTEMPT_ID": spec.AttemptID,
+		"MACHINIST_COMMAND": spec.Command, "MACHINIST_ROLE": spec.Role,
+		"MACHINIST_ROUTE": spec.Route, "MACHINIST_PROFILE": command.Profile,
+		"MACHINIST_HARNESS": command.Harness, "MACHINIST_PROVIDER": command.Provider,
+		"MACHINIST_MODEL": command.Model, "MACHINIST_WORKER_INSTANCE": w.instanceID,
+	} {
+		if value != "" {
+			command.Environment[name] = value
+		}
+	}
+	if w.config.Environment.DetectionEnabled() {
+		command.Environment["MACHINIST_ENVIRONMENT_DIGEST"] = environment.Detect(w.config.Environment.Tags).Digest
+	}
 	result, runErr := runner.Execute(ctx, runner.Options{
 		RunID:         spec.ID,
 		ArtifactKey:   spec.LeaseToken,
@@ -245,11 +271,13 @@ func (w *Worker) deliver(ctx context.Context, runID string, completion protocol.
 	}
 }
 
-func (w *Worker) heartbeat(ctx context.Context, spec protocol.RunSpec) error {
-	return w.client.Post(ctx, "/api/v1/runs/"+url.PathEscape(spec.ID)+"/heartbeat", protocol.Heartbeat{
+func (w *Worker) heartbeat(ctx context.Context, spec protocol.RunSpec) (protocol.HeartbeatResponse, error) {
+	var response protocol.HeartbeatResponse
+	err := w.client.Post(ctx, "/api/v1/runs/"+url.PathEscape(spec.ID)+"/heartbeat", protocol.Heartbeat{
 		InstanceID: w.instanceID,
 		LeaseToken: spec.LeaseToken,
-	}, nil)
+	}, &response)
+	return response, err
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {

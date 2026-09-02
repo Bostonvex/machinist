@@ -17,6 +17,8 @@ targets=(
   linux/arm64
   darwin/amd64
   darwin/arm64
+  windows/amd64
+  windows/arm64
 )
 
 (
@@ -35,18 +37,22 @@ for target in "${targets[@]}"; do
   goarch=${target#*/}
   archive="$release_dir/machinist_${release_name}_${goos}_${goarch}.tar.gz"
   target_dir="$verify_dir/${goos}_${goarch}"
+  binary_name=machinist
+  if [[ "$goos" == windows ]]; then
+    binary_name=machinist.exe
+  fi
 
   test -f "$archive"
   mkdir -p "$target_dir"
   contents=$(tar -tzf "$archive" | LC_ALL=C sort)
-  expected=$(printf '%s\n' LICENSE README.md machinist | LC_ALL=C sort)
+  expected=$(printf '%s\n' LICENSE README.md "$binary_name" | LC_ALL=C sort)
   test "$contents" = "$expected"
   tar -C "$target_dir" -xzf "$archive"
-  test -x "$target_dir/machinist"
-  go version -m "$target_dir/machinist" | grep -F "GOOS=$goos"
-  go version -m "$target_dir/machinist" | grep -F "GOARCH=$goarch"
+  test -x "$target_dir/$binary_name"
+  go version -m "$target_dir/$binary_name" | grep -F "GOOS=$goos"
+  go version -m "$target_dir/$binary_name" | grep -F "GOARCH=$goarch"
 
   if [[ "$target" == "$host_target" ]]; then
-    test "$("$target_dir/machinist" version)" = "$version"
+    test "$("$target_dir/$binary_name" version)" = "$version"
   fi
 done

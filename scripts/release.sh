@@ -26,6 +26,8 @@ targets=(
   linux/arm64
   darwin/amd64
   darwin/arm64
+  windows/amd64
+  windows/arm64
 )
 
 for target in "${targets[@]}"; do
@@ -33,18 +35,22 @@ for target in "${targets[@]}"; do
   goarch=${target#*/}
   target_dir="$build_dir/${goos}_${goarch}"
   archive="$output_dir/machinist_${release_name}_${goos}_${goarch}.tar.gz"
+  binary_name=machinist
+  if [[ "$goos" == windows ]]; then
+    binary_name=machinist.exe
+  fi
 
   mkdir -p "$target_dir"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -buildvcs=false -trimpath -ldflags="-s -w -X main.version=$version" \
-    -o "$target_dir/machinist" ./cmd/machinist
+    -o "$target_dir/$binary_name" ./cmd/machinist
   cp LICENSE README.md "$target_dir/"
   chmod 0644 "$target_dir/LICENSE" "$target_dir/README.md"
-  touch -t 198001010000 "$target_dir/LICENSE" "$target_dir/README.md" "$target_dir/machinist"
-  COPYFILE_DISABLE=1 tar -C "$target_dir" -cf - LICENSE README.md machinist | gzip -n > "$archive"
+  touch -t 198001010000 "$target_dir/LICENSE" "$target_dir/README.md" "$target_dir/$binary_name"
+  COPYFILE_DISABLE=1 tar -C "$target_dir" -cf - LICENSE README.md "$binary_name" | gzip -n > "$archive"
 done
 
-printf '{\n  "version": "%s",\n  "commit": "%s",\n  "targets": ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"]\n}\n' \
+printf '{\n  "version": "%s",\n  "commit": "%s",\n  "targets": ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64", "windows/amd64", "windows/arm64"]\n}\n' \
   "$version" "$commit" > "$output_dir/release-manifest.json"
 
 (
