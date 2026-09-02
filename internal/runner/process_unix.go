@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 )
 
@@ -18,10 +19,14 @@ func terminateProcessTree(process *os.Process) error {
 		return nil
 	}
 	err := syscall.Kill(-process.Pid, syscall.SIGKILL)
-	if errors.Is(err, syscall.ESRCH) {
+	if ignorableProcessTreeTerminationError(err) {
 		return nil
 	}
 	return err
+}
+
+func ignorableProcessTreeTerminationError(err error) bool {
+	return errors.Is(err, syscall.ESRCH) || runtime.GOOS == "darwin" && errors.Is(err, syscall.EPERM)
 }
 
 func processExitCode(state *os.ProcessState) int {
