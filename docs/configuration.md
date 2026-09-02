@@ -97,6 +97,18 @@ profile, harness, provider, authentication mode, and role. Route candidates are
 profile names only; commands, endpoints, credentials, and paths cannot be
 overridden through the API.
 
+Each execution is a durable attempt with its own ID and lease fence. A failed
+attempt is retried only when its normalized error class appears in `fallback_on`
+and `max_attempts` has not been reached. The next attempt rotates to the next
+compatible route candidate. Stale attempt or lease completions are rejected.
+Lease-loss recovery remains compatible with legacy executors while recording an
+abandoned attempt, so interrupted work is visible rather than silently erased.
+
+Current worker classifications are `configuration`, `harness_crash`, `timeout`,
+`cancelled`, and `test_failure`. Adapters may additionally report `rate_limit`,
+`capacity`, `transient`, `transport`, `authentication`, `policy`, or
+`model_unavailable`. Unknown or unlisted failures terminate the run.
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`

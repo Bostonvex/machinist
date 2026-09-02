@@ -73,7 +73,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 3 {
+	if count != 0 || version != 4 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -84,7 +84,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=4;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=5;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -134,7 +134,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 4 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -193,6 +193,60 @@ func TestPollSelectsFirstCompatibleRouteProfile(t *testing.T) {
 	stored := snapshot.Jobs[0].Runs[0]
 	if stored.Profile != "dgx-local" || stored.Route != "implementation" || stored.Harness != "opencode" || stored.Provider != "openai_compatible" || stored.Role != "implementer" {
 		t.Fatalf("stored run = %#v", stored)
+	}
+}
+
+func TestRetryCreatesFencedAttemptAndFallsBack(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"local", "subscription"},
+		MaxAttempts: 2, FallbackOn: []string{"harness_crash"}, Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	request := pollRequest("worker-a", []string{"local", "subscription"}, []string{"machinist"})
+	first, err := store.Poll(t.Context(), request)
+	if err != nil || first == nil {
+		t.Fatalf("first poll = %#v, %v", first, err)
+	}
+	if first.Profile != "local" || first.AttemptNumber != 1 || first.AttemptID == "" {
+		t.Fatalf("first attempt = %#v", first)
+	}
+	firstCompletion := protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: first.LeaseToken, AttemptID: first.AttemptID,
+		State: "failed", ExitCode: 1, Error: "harness exited", ErrorClass: "harness_crash",
+		Result: []byte(`{"duration_millis":10,"token_usage":20}`),
+	}
+	if err := store.Complete(t.Context(), first.ID, firstCompletion); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Poll(t.Context(), request)
+	if err != nil || second == nil {
+		t.Fatalf("second poll = %#v, %v", second, err)
+	}
+	if second.Profile != "subscription" || second.AttemptNumber != 2 || second.AttemptID == "" || second.AttemptID == first.AttemptID {
+		t.Fatalf("second attempt = %#v", second)
+	}
+	if err := store.Complete(t.Context(), first.ID, firstCompletion); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("stale completion error = %v", err)
+	}
+	if err := store.Complete(t.Context(), second.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: second.LeaseToken, AttemptID: second.AttemptID,
+		State: "succeeded", ExitCode: 0, Result: []byte(`{"duration_millis":30,"token_usage":40}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := snapshot.Jobs[0].Runs[0]
+	if snapshot.Jobs[0].State != "succeeded" || run.State != "succeeded" || run.AttemptCount != 2 || len(run.Attempts) != 2 {
+		t.Fatalf("run = %#v", run)
+	}
+	if run.Attempts[0].State != "failed" || run.Attempts[0].ErrorClass != "harness_crash" || run.Attempts[1].State != "succeeded" {
+		t.Fatalf("attempts = %#v", run.Attempts)
 	}
 }
 
@@ -1240,8 +1294,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
-		t.Fatalf("schema version = %d, %v, want 3", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
+		t.Fatalf("schema version = %d, %v, want 4", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {

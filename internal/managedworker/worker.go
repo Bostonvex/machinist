@@ -163,10 +163,11 @@ func profileCapabilities(configured map[string]harness.Capability) map[string]pr
 }
 
 func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
-	completion := protocol.Completion{InstanceID: w.instanceID, LeaseToken: spec.LeaseToken, State: "failed", ExitCode: 1}
+	completion := protocol.Completion{InstanceID: w.instanceID, LeaseToken: spec.LeaseToken, AttemptID: spec.AttemptID, State: "failed", ExitCode: 1}
 	repository, err := w.config.ResolveRepository(spec.Repository)
 	if err != nil {
 		completion.Error = err.Error()
+		completion.ErrorClass = "configuration"
 		return completion
 	}
 	command, err := w.config.ResolveCommandModel(config.ResolvedCommand{
@@ -184,6 +185,7 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	}, spec.Model)
 	if err != nil {
 		completion.Error = err.Error()
+		completion.ErrorClass = "configuration"
 		return completion
 	}
 	result, runErr := runner.Execute(ctx, runner.Options{
@@ -205,8 +207,23 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	}
 	if runErr != nil {
 		completion.Error = runErr.Error()
+		completion.ErrorClass = classifyExecutionError(result.State, runErr)
 	}
 	return completion
+}
+
+func classifyExecutionError(state runner.State, err error) string {
+	switch state {
+	case runner.StateTimedOut:
+		return "timeout"
+	case runner.StateCancelled:
+		return "cancelled"
+	}
+	var runtimeError *runner.RuntimeError
+	if errors.As(err, &runtimeError) {
+		return "harness_crash"
+	}
+	return "test_failure"
 }
 
 func (w *Worker) deliver(ctx context.Context, runID string, completion protocol.Completion) error {

@@ -31,6 +31,8 @@ type PollResponse struct {
 
 type RunSpec struct {
 	ID             string   `json:"id"`
+	AttemptID      string   `json:"attempt_id,omitempty"`
+	AttemptNumber  int      `json:"attempt_number,omitempty"`
 	JobID          string   `json:"job_id"`
 	Command        string   `json:"command"`
 	CommandHash    string   `json:"command_hash"`
@@ -59,8 +61,10 @@ type Heartbeat struct {
 type Completion struct {
 	InstanceID string          `json:"instance_id"`
 	LeaseToken string          `json:"lease_token"`
+	AttemptID  string          `json:"attempt_id,omitempty"`
 	State      string          `json:"state"`
 	ExitCode   int             `json:"exit_code"`
+	ErrorClass string          `json:"error_class,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	Events     string          `json:"events,omitempty"`
