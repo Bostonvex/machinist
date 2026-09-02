@@ -4,6 +4,19 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
+# Routes choose the first compatible, available worker-local profile. A command
+# uses exactly one of executor, profile, or route.
+# [routes.implementation]
+# profiles = ["dgx-local", "codex-subscription", "deepseek"]
+# max_attempts = 3
+# fallback_on = ["capacity", "rate_limit", "transient"]
+#
+# [commands.implement]
+# route = "implementation"
+# role = "implementer"
+# prompt_file = "prompts/foreman.md"
+# timeout = "120m"
+
 [commands.foreman]
 executor = "codex"
 prompt_file = "prompts/foreman.md"

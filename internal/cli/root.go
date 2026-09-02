@@ -11,6 +11,8 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/controlplane"
+	"github.com/owainlewis/machinist/internal/environment"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/managedworker"
 	"github.com/owainlewis/machinist/internal/runner"
 	"github.com/owainlewis/machinist/internal/updater"
@@ -295,6 +297,21 @@ func runConfiguredCommand(ctx context.Context, options *commandOptions, worker c
 	configured, err = config.RenderPrompt(configured, options.prompt)
 	if err != nil {
 		return err
+	}
+	var manifest environment.Manifest
+	if worker.Environment.DetectionEnabled() {
+		manifest = environment.Detect(worker.Environment.Tags)
+	}
+	capabilities := harness.Inspect(worker, manifest)
+	configured, err = worker.ResolveRoute(configured, capabilities.Executors)
+	if err != nil {
+		return err
+	}
+	if configured.Profile != "" {
+		profile := capabilities.Profiles[configured.Profile]
+		if !profile.Available {
+			return fmt.Errorf("profile %q is unavailable: %s", configured.Profile, profile.Reason)
+		}
 	}
 	configured, err = worker.ResolveCommandModel(configured, options.model)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,11 @@ type Result struct {
 	ID             string    `json:"id"`
 	Command        string    `json:"command"`
 	CommandHash    string    `json:"command_hash"`
+	Profile        string    `json:"profile,omitempty"`
+	Harness        string    `json:"harness,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	AuthMode       string    `json:"auth_mode,omitempty"`
+	Role           string    `json:"role,omitempty"`
 	Definition     string    `json:"definition"`
 	Repository     string    `json:"repository"`
 	State          State     `json:"state"`
@@ -131,6 +137,11 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		ID:          runID,
 		Command:     options.Command.Name,
 		CommandHash: options.Command.Hash,
+		Profile:     options.Command.Profile,
+		Harness:     options.Command.Harness,
+		Provider:    options.Command.Provider,
+		AuthMode:    options.Command.AuthMode,
+		Role:        options.Command.Role,
 		Definition:  options.Command.Definition,
 		Repository:  repository,
 		State:       StateFailed,
@@ -146,10 +157,17 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 		return completeFailure(&result, log, runDirectory, fmt.Errorf("reset executor token usage report: %w", err))
 	}
 
-	executorCommand := structuredCommand(options.Command.Executor, options.Command.Command)
+	executionKind := options.Command.Harness
+	if executionKind == "" {
+		executionKind = options.Command.Executor
+	}
+	executorCommand := structuredCommand(executionKind, options.Command.Command)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
 	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
+	for _, name := range sortedEnvironmentNames(options.Command.Environment) {
+		command.Env = append(command.Env, name+"="+options.Command.Environment[name])
+	}
 	configureProcess(command)
 
 	stdinReader, stdinWriter, err := os.Pipe()
@@ -192,7 +210,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	streamErrors := make(chan error, 2)
 	var streams sync.WaitGroup
 	streams.Add(2)
-	usageCollector := newUsageCollector(options.Command.Executor, executorCommand)
+	usageCollector := newUsageCollector(executionKind, executorCommand)
 	stdoutDestination := options.Stdout
 	if usageCollector != nil {
 		stdoutDestination = io.MultiWriter(options.Stdout, usageCollector)
@@ -597,6 +615,15 @@ func sanitizedEnvironment(environ []string) []string {
 		clean = append(clean, entry)
 	}
 	return clean
+}
+
+func sortedEnvironmentNames(environment map[string]string) []string {
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func isRepositoryGitEnvironment(name string) bool {

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/environment"
+	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
@@ -127,18 +129,37 @@ func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec
 }
 
 func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
+	var workerEnvironment environment.Manifest
+	if w.config.Environment.DetectionEnabled() {
+		workerEnvironment = environment.Detect(w.config.Environment.Tags)
+	}
+	capabilities := harness.Inspect(w.config, workerEnvironment)
 	request := protocol.PollRequest{
 		InstanceID:   w.instanceID,
 		Name:         w.config.Name,
-		Executors:    w.config.ExecutorNames(),
+		Executors:    capabilities.Executors,
 		Repositories: w.config.RepositoryNames(),
-		Models:       w.config.ModelCapabilities(),
+		Models:       capabilities.Models,
+		Profiles:     profileCapabilities(capabilities.Profiles),
+		Environment:  workerEnvironment,
 	}
 	var response protocol.PollResponse
 	if err := w.client.Post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
 		return nil, err
 	}
 	return response.Run, nil
+}
+
+func profileCapabilities(configured map[string]harness.Capability) map[string]protocol.ProfileCapability {
+	capabilities := make(map[string]protocol.ProfileCapability, len(configured))
+	for name, profile := range configured {
+		capabilities[name] = protocol.ProfileCapability{
+			Harness: profile.Harness, Provider: profile.Provider,
+			AuthMode: profile.AuthMode, Models: profile.Models,
+			Available: profile.Available, Reason: profile.Reason,
+		}
+	}
+	return capabilities
 }
 
 func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Completion {
@@ -151,6 +172,11 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	command, err := w.config.ResolveCommandModel(config.ResolvedCommand{
 		Name:       spec.Command,
 		Executor:   spec.Executor,
+		Profile:    spec.Profile,
+		Harness:    spec.Harness,
+		Provider:   spec.Provider,
+		AuthMode:   spec.AuthMode,
+		Role:       spec.Role,
 		Prompt:     spec.RenderedPrompt,
 		Timeout:    time.Duration(spec.TimeoutMillis) * time.Millisecond,
 		Definition: "control-plane",

@@ -1,0 +1,62 @@
+package harness
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/environment"
+)
+
+func TestInspectFiltersProfilesWithoutExposingSecretNames(t *testing.T) {
+	worker := config.Worker{
+		Executors: map[string]config.Executor{"legacy": {Command: []string{"legacy"}}},
+		Profiles: map[string]config.Profile{
+			"local": {
+				Harness: "opencode", Provider: "openai_compatible", AuthMode: "local",
+				Command: []string{"opencode", "run", "--model={{machinist.model}}"},
+				Models:  map[string]string{"coder": "local/coder"}, RequiresTags: []string{"dgx-spark"},
+			},
+			"deepseek": {
+				Harness: "pi", Provider: "deepseek", AuthMode: "api_key", SecretEnv: "DEEPSEEK_API_KEY",
+				Command: []string{"pi", "--model={{machinist.model}}"}, Models: map[string]string{"reasoner": "deepseek-reasoner"},
+			},
+		},
+	}
+	manifest := environment.Detect([]string{"dgx-spark"})
+	report := inspect(worker, manifest,
+		func(name string) (string, error) {
+			if name == "opencode" {
+				return "/usr/bin/opencode", nil
+			}
+			return "", errors.New("not found")
+		},
+		func(string) (string, bool) { return "", false },
+	)
+	if len(report.Executors) != 2 || report.Executors[0] != "legacy" || report.Executors[1] != "local" {
+		t.Fatalf("executors = %#v", report.Executors)
+	}
+	if !report.Profiles["local"].Available || report.Profiles["deepseek"].Available || report.Profiles["deepseek"].Reason != "credential unavailable" {
+		t.Fatalf("profiles = %#v", report.Profiles)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", report), "DEEPSEEK_API_KEY") {
+		t.Fatal("secret environment name leaked into models")
+	}
+}
+
+func TestInspectChecksPlatformAndExecutable(t *testing.T) {
+	worker := config.Worker{Profiles: map[string]config.Profile{
+		"windows-only": {Harness: "generic", AuthMode: "local", Command: []string{"agent"}, RequiresOS: []string{"windows"}},
+		"missing":      {Harness: "generic", AuthMode: "local", Command: []string{"missing"}},
+	}}
+	manifest := environment.Detect(nil)
+	report := inspect(worker, manifest, func(string) (string, error) { return "", errors.New("not found") }, func(string) (string, bool) { return "", false })
+	if report.Profiles["windows-only"].Reason != "operating system requirement not met" {
+		t.Fatalf("windows profile = %#v", report.Profiles["windows-only"])
+	}
+	if report.Profiles["missing"].Reason != "harness executable unavailable" {
+		t.Fatalf("missing profile = %#v", report.Profiles["missing"])
+	}
+}

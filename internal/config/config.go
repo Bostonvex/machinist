@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,9 +38,20 @@ type Worker struct {
 	Name          string                `toml:"name"`
 	DataDirectory string                `toml:"data_directory"`
 	ControlPlane  ControlPlane          `toml:"control_plane"`
+	Environment   WorkerEnvironment     `toml:"environment"`
 	Executors     map[string]Executor   `toml:"executors"`
+	Profiles      map[string]Profile    `toml:"profiles"`
 	Repositories  map[string]Repository `toml:"repositories"`
 	configDir     string
+}
+
+type WorkerEnvironment struct {
+	Detect *bool    `toml:"detect"`
+	Tags   []string `toml:"tags"`
+}
+
+func (e WorkerEnvironment) DetectionEnabled() bool {
+	return e.Detect == nil || *e.Detect
 }
 
 type ControlPlane struct {
@@ -49,6 +62,24 @@ type ControlPlane struct {
 type Executor struct {
 	Command []string          `toml:"command"`
 	Models  map[string]string `toml:"models"`
+}
+
+// Profile describes one typed, worker-local harness/provider combination.
+// SecretEnv is an environment variable name only; its value is never loaded
+// into configuration or sent to the control plane.
+type Profile struct {
+	Harness           string            `toml:"harness"`
+	Provider          string            `toml:"provider"`
+	AuthMode          string            `toml:"auth_mode"`
+	SecretEnv         string            `toml:"secret_env"`
+	BaseURL           string            `toml:"base_url"`
+	BaseURLEnv        string            `toml:"base_url_env"`
+	AllowInsecureHTTP bool              `toml:"allow_insecure_http"`
+	Command           []string          `toml:"command"`
+	Models            map[string]string `toml:"models"`
+	RequiresOS        []string          `toml:"requires_os"`
+	RequiresArch      []string          `toml:"requires_arch"`
+	RequiresTags      []string          `toml:"requires_tags"`
 }
 
 func (e Executor) supportsModel() bool {
@@ -70,6 +101,7 @@ type Server struct {
 type Config struct {
 	Server   Server             `toml:"server"`
 	Commands map[string]Command `toml:"commands"`
+	Routes   map[string]Route   `toml:"routes"`
 	GitHub   GitHub             `toml:"github"`
 	Triggers TriggerDefinitions `toml:"triggers"`
 	path     string
@@ -132,19 +164,38 @@ type ResolvedTrigger struct {
 
 type Command struct {
 	Executor   string `toml:"executor"`
+	Profile    string `toml:"profile"`
+	Route      string `toml:"route"`
+	Role       string `toml:"role"`
 	PromptFile string `toml:"prompt_file"`
 	Timeout    string `toml:"timeout"`
 }
 
+type Route struct {
+	Profiles    []string `toml:"profiles"`
+	MaxAttempts int      `toml:"max_attempts"`
+	FallbackOn  []string `toml:"fallback_on"`
+}
+
 type ResolvedCommand struct {
-	Name       string
-	Executor   string
-	Command    []string
-	Model      string
-	Prompt     string
-	Timeout    time.Duration
-	Definition string
-	Hash       string
+	Name        string
+	Executor    string
+	Profile     string
+	Route       string
+	Candidates  []string
+	MaxAttempts int
+	FallbackOn  []string
+	Harness     string
+	Provider    string
+	AuthMode    string
+	Role        string
+	Environment map[string]string
+	Command     []string
+	Model       string
+	Prompt      string
+	Timeout     time.Duration
+	Definition  string
+	Hash        string
 }
 
 func LoadWorker(path string) (Worker, error) {
@@ -231,6 +282,9 @@ func loadConfigFile(path string) (Config, error) {
 	if err := decoder.Decode(&machinistConfig); err != nil {
 		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
 	}
+	if err := validateRoutes(machinistConfig.Routes); err != nil {
+		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
+	}
 	return machinistConfig, nil
 }
 
@@ -247,9 +301,21 @@ func (w Worker) ResolveMachinistConfig(override string) (string, error) {
 }
 
 func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel string) (ResolvedCommand, error) {
+	if command.Route != "" && command.Executor == "" {
+		return ResolvedCommand{}, fmt.Errorf("route %q has not been resolved to an available profile", command.Route)
+	}
 	executor, ok := w.Executors[command.Executor]
 	if !ok {
-		return ResolvedCommand{}, fmt.Errorf("executor %q is not configured on this worker", command.Executor)
+		profile, profileOK := w.Profiles[command.Executor]
+		if !profileOK {
+			return ResolvedCommand{}, fmt.Errorf("executor or profile %q is not configured on this worker", command.Executor)
+		}
+		executor = Executor{Command: profile.Command, Models: profile.Models}
+		command.Profile = command.Executor
+		command.Harness = profile.Harness
+		command.Provider = profile.Provider
+		command.AuthMode = profile.AuthMode
+		command.Environment = profileEnvironment(profile)
 	}
 	if err := validateCommand(command.Executor, executor.Command); err != nil {
 		return ResolvedCommand{}, err
@@ -267,6 +333,26 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 	}
 	command.Model = model
 	return command, nil
+}
+
+// ResolveRoute chooses the first configured candidate present in available.
+// The ordered candidate list is portable policy; profile details remain local.
+func (w Worker) ResolveRoute(command ResolvedCommand, available []string) (ResolvedCommand, error) {
+	if command.Route == "" {
+		return command, nil
+	}
+	availableSet := make(map[string]bool, len(available))
+	for _, name := range available {
+		availableSet[name] = true
+	}
+	for _, name := range command.Candidates {
+		if availableSet[name] {
+			command.Executor = name
+			command.Profile = name
+			return command, nil
+		}
+	}
+	return ResolvedCommand{}, fmt.Errorf("route %q has no available profile on this worker", command.Route)
 }
 
 func resolveModel(name string, executor Executor, requested string) (string, error) {
@@ -307,13 +393,27 @@ func (w Worker) WorkerToken() (string, error) {
 	return readToken(path)
 }
 
-func (w Worker) ExecutorNames() []string { return sortedMapKeys(w.Executors) }
+func (w Worker) ExecutorNames() []string {
+	names := make(map[string]bool, len(w.Executors)+len(w.Profiles))
+	for name := range w.Executors {
+		names[name] = true
+	}
+	for name := range w.Profiles {
+		names[name] = true
+	}
+	return sortedMapKeys(names)
+}
 
 func (w Worker) ModelCapabilities() map[string][]string {
 	capabilities := make(map[string][]string)
 	for name, executor := range w.Executors {
 		if executor.supportsModel() {
 			capabilities[name] = sortedMapKeys(executor.Models)
+		}
+	}
+	for name, profile := range w.Profiles {
+		if len(profile.Models) > 0 {
+			capabilities[name] = sortedMapKeys(profile.Models)
 		}
 	}
 	return capabilities
@@ -349,14 +449,39 @@ func (c Config) ResolveCommand(name string) (ResolvedCommand, error) {
 	if !ok {
 		return ResolvedCommand{}, fmt.Errorf("command %q is not defined in %s", name, c.path)
 	}
-	return resolveCommand(c.path, name, command)
+	return resolveCommand(c.path, name, command, c.Routes)
 }
 
 func LoadDefinitions(path string) (Config, error) { return loadConfigFile(path) }
 
-func resolveCommand(definitionPath, name string, command Command) (ResolvedCommand, error) {
-	if strings.TrimSpace(command.Executor) == "" {
-		return ResolvedCommand{}, fmt.Errorf("command %q must define executor", name)
+func resolveCommand(definitionPath, name string, command Command, routes map[string]Route) (ResolvedCommand, error) {
+	command.Executor = strings.TrimSpace(command.Executor)
+	command.Profile = strings.TrimSpace(command.Profile)
+	command.Route = strings.TrimSpace(command.Route)
+	configuredSelections := 0
+	for _, value := range []string{command.Executor, command.Profile, command.Route} {
+		if value != "" {
+			configuredSelections++
+		}
+	}
+	if configuredSelections != 1 {
+		return ResolvedCommand{}, fmt.Errorf("command %q must define executor, profile, or route (exactly one)", name)
+	}
+	executionName := command.Executor
+	if command.Profile != "" {
+		executionName = command.Profile
+	}
+	var route Route
+	if command.Route != "" {
+		var ok bool
+		route, ok = routes[command.Route]
+		if !ok {
+			return ResolvedCommand{}, fmt.Errorf("command %q route %q is not defined", name, command.Route)
+		}
+	}
+	command.Role = strings.ToLower(strings.TrimSpace(command.Role))
+	if command.Role != "" && (len(command.Role) > 64 || !safeEnvironmentTag(command.Role)) {
+		return ResolvedCommand{}, fmt.Errorf("command %q role is invalid", name)
 	}
 	prompt := promptParameter
 	if strings.TrimSpace(command.PromptFile) != "" {
@@ -392,11 +517,17 @@ func resolveCommand(definitionPath, name string, command Command) (ResolvedComma
 	}
 
 	resolved := ResolvedCommand{
-		Name:       name,
-		Executor:   command.Executor,
-		Prompt:     prompt,
-		Timeout:    timeout,
-		Definition: definitionPath,
+		Name:        name,
+		Executor:    executionName,
+		Profile:     command.Profile,
+		Route:       command.Route,
+		Candidates:  slices.Clone(route.Profiles),
+		MaxAttempts: route.MaxAttempts,
+		FallbackOn:  slices.Clone(route.FallbackOn),
+		Role:        command.Role,
+		Prompt:      prompt,
+		Timeout:     timeout,
+		Definition:  definitionPath,
 	}
 	var err error
 	resolved.Hash, err = commandHash(resolved)
@@ -404,6 +535,41 @@ func resolveCommand(definitionPath, name string, command Command) (ResolvedComma
 		return ResolvedCommand{}, err
 	}
 	return resolved, nil
+}
+
+func validateRoutes(routes map[string]Route) error {
+	allowedFallbacks := map[string]bool{
+		"capacity": true, "rate_limit": true, "transient": true,
+		"model_unavailable": true, "harness_crash": true, "timeout": true,
+	}
+	for name, route := range routes {
+		if strings.TrimSpace(name) == "" || len(name) > 64 || !safeEnvironmentTag(strings.ToLower(strings.TrimSpace(name))) {
+			return errors.New("route names must be non-empty portable identifiers")
+		}
+		if len(route.Profiles) == 0 || len(route.Profiles) > 8 {
+			return fmt.Errorf("route %q must define between 1 and 8 profiles", name)
+		}
+		seen := make(map[string]bool, len(route.Profiles))
+		for _, profile := range route.Profiles {
+			if profile != strings.TrimSpace(profile) || len(profile) > 64 || !safeEnvironmentTag(strings.ToLower(profile)) || seen[profile] {
+				return fmt.Errorf("route %q profile %q is invalid or duplicated", name, profile)
+			}
+			seen[profile] = true
+		}
+		if route.MaxAttempts < 0 || route.MaxAttempts > 8 {
+			return fmt.Errorf("route %q max_attempts must be between 1 and 8 when configured", name)
+		}
+		if route.MaxAttempts == 0 {
+			route.MaxAttempts = 1
+			routes[name] = route
+		}
+		for _, reason := range route.FallbackOn {
+			if !allowedFallbacks[reason] {
+				return fmt.Errorf("route %q fallback reason %q is unsupported", name, reason)
+			}
+		}
+	}
+	return nil
 }
 
 func RenderPrompt(command ResolvedCommand, prompt string) (ResolvedCommand, error) {
@@ -489,6 +655,15 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		return Worker{}, fmt.Errorf("resolve worker data directory: %w", err)
 	}
 	worker.DataDirectory = filepath.Clean(worker.DataDirectory)
+	worker.Environment.Tags = normaliseEnvironmentTags(worker.Environment.Tags)
+	if len(worker.Environment.Tags) > 32 {
+		return Worker{}, errors.New("environment tags cannot exceed 32 items")
+	}
+	for _, tag := range worker.Environment.Tags {
+		if len(tag) > 64 || !safeEnvironmentTag(tag) {
+			return Worker{}, fmt.Errorf("environment tag %q is invalid", tag)
+		}
+	}
 	for name, repository := range worker.Repositories {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(repository.Path) == "" {
 			return Worker{}, errors.New("repository names and paths must be non-empty")
@@ -501,6 +676,9 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		worker.Repositories[name] = repository
 	}
 	for name, executor := range worker.Executors {
+		if _, duplicate := worker.Profiles[name]; duplicate {
+			return Worker{}, fmt.Errorf("execution name %q is configured as both an executor and a profile", name)
+		}
 		if err := validateCommand(name, executor.Command); err != nil {
 			return Worker{}, err
 		}
@@ -513,7 +691,147 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 			return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
 		}
 	}
+	for name, profile := range worker.Profiles {
+		if err := validateProfile(name, profile); err != nil {
+			return Worker{}, err
+		}
+		profile.Harness = strings.ToLower(strings.TrimSpace(profile.Harness))
+		profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
+		profile.AuthMode = strings.ToLower(strings.TrimSpace(profile.AuthMode))
+		profile.SecretEnv = strings.TrimSpace(profile.SecretEnv)
+		profile.BaseURLEnv = strings.TrimSpace(profile.BaseURLEnv)
+		profile.RequiresOS = normaliseEnvironmentTags(profile.RequiresOS)
+		profile.RequiresArch = normaliseEnvironmentTags(profile.RequiresArch)
+		profile.RequiresTags = normaliseEnvironmentTags(profile.RequiresTags)
+		worker.Profiles[name] = profile
+	}
 	return worker, nil
+}
+
+func validateProfile(name string, profile Profile) error {
+	if strings.TrimSpace(name) == "" || len(name) > 64 || !safeEnvironmentTag(strings.ToLower(strings.TrimSpace(name))) {
+		return errors.New("profile names must be non-empty portable identifiers")
+	}
+	profile.Harness = strings.ToLower(strings.TrimSpace(profile.Harness))
+	if !slices.Contains([]string{"generic", "codex", "claude", "opencode", "pi"}, profile.Harness) {
+		return fmt.Errorf("profile %q harness %q is unsupported", name, profile.Harness)
+	}
+	profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
+	if profile.Provider != "" && (len(profile.Provider) > 64 || !safeEnvironmentTag(profile.Provider)) {
+		return fmt.Errorf("profile %q provider is invalid", name)
+	}
+	profile.AuthMode = strings.ToLower(strings.TrimSpace(profile.AuthMode))
+	if !slices.Contains([]string{"subscription", "api_key", "local"}, profile.AuthMode) {
+		return fmt.Errorf("profile %q auth_mode must be subscription, api_key, or local", name)
+	}
+	if profile.AuthMode == "api_key" {
+		if !safeEnvironmentVariable(strings.TrimSpace(profile.SecretEnv)) {
+			return fmt.Errorf("profile %q api_key auth requires a valid secret_env name", name)
+		}
+	} else if strings.TrimSpace(profile.SecretEnv) != "" {
+		return fmt.Errorf("profile %q secret_env is only valid with api_key auth", name)
+	}
+	if err := validateCommand(name, profile.Command); err != nil {
+		return err
+	}
+	for alias, model := range profile.Models {
+		if strings.TrimSpace(alias) == "" || strings.TrimSpace(model) == "" {
+			return fmt.Errorf("profile %q model aliases and values must be non-empty", name)
+		}
+	}
+	if len(profile.Models) > 0 && !(Executor{Command: profile.Command}).supportsModel() {
+		return fmt.Errorf("profile %q defines models but its command does not contain %s", name, modelParameter)
+	}
+	if err := validateProfileEndpoint(name, profile); err != nil {
+		return err
+	}
+	for field, values := range map[string][]string{"requires_os": profile.RequiresOS, "requires_arch": profile.RequiresArch, "requires_tags": profile.RequiresTags} {
+		normalised := normaliseEnvironmentTags(values)
+		if len(normalised) > 32 {
+			return fmt.Errorf("profile %q %s cannot exceed 32 items", name, field)
+		}
+		for _, value := range normalised {
+			if len(value) > 64 || !safeEnvironmentTag(value) {
+				return fmt.Errorf("profile %q %s value %q is invalid", name, field, value)
+			}
+		}
+	}
+	return nil
+}
+
+func validateProfileEndpoint(name string, profile Profile) error {
+	baseURL := strings.TrimSpace(profile.BaseURL)
+	baseURLEnv := strings.TrimSpace(profile.BaseURLEnv)
+	if (baseURL == "") != (baseURLEnv == "") {
+		return fmt.Errorf("profile %q base_url and base_url_env must be configured together", name)
+	}
+	if baseURL == "" {
+		return nil
+	}
+	if !safeEnvironmentVariable(baseURLEnv) || strings.HasPrefix(baseURLEnv, "MACHINIST_") ||
+		!(strings.HasSuffix(baseURLEnv, "_BASE_URL") || strings.HasSuffix(baseURLEnv, "_API_BASE") || strings.HasSuffix(baseURLEnv, "_HOST")) {
+		return fmt.Errorf("profile %q base_url_env is invalid or reserved", name)
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("profile %q base_url must be an http(s) origin without credentials, query, or fragment", name)
+	}
+	if parsed.Scheme == "http" && !loopbackHost(parsed.Hostname()) && !profile.AllowInsecureHTTP {
+		return fmt.Errorf("profile %q remote http base_url requires allow_insecure_http = true", name)
+	}
+	return nil
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
+}
+
+func safeEnvironmentVariable(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for index, character := range name {
+		if (character >= 'A' && character <= 'Z') || character == '_' || (index > 0 && character >= '0' && character <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func profileEnvironment(profile Profile) map[string]string {
+	if profile.BaseURL == "" {
+		return nil
+	}
+	return map[string]string{profile.BaseURLEnv: profile.BaseURL}
+}
+
+func normaliseEnvironmentTags(tags []string) []string {
+	result := make([]string, 0, len(tags))
+	seen := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag != "" && !seen[tag] {
+			seen[tag] = true
+			result = append(result, tag)
+		}
+	}
+	slices.Sort(result)
+	return result
+}
+
+func safeEnvironmentTag(tag string) bool {
+	for _, character := range tag {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func applyServerDefaults(server Server) (Server, error) {
@@ -644,11 +962,17 @@ func readBoundedFile(path string, limit int64) ([]byte, error) {
 
 func commandHash(command ResolvedCommand) (string, error) {
 	payload, err := json.Marshal(struct {
-		Name     string        `json:"name"`
-		Executor string        `json:"executor"`
-		Prompt   string        `json:"prompt"`
-		Timeout  time.Duration `json:"timeout"`
-	}{command.Name, command.Executor, command.Prompt, command.Timeout})
+		Name        string        `json:"name"`
+		Executor    string        `json:"executor"`
+		Profile     string        `json:"profile,omitempty"`
+		Route       string        `json:"route,omitempty"`
+		Candidates  []string      `json:"candidates,omitempty"`
+		MaxAttempts int           `json:"max_attempts,omitempty"`
+		FallbackOn  []string      `json:"fallback_on,omitempty"`
+		Role        string        `json:"role,omitempty"`
+		Prompt      string        `json:"prompt"`
+		Timeout     time.Duration `json:"timeout"`
+	}{command.Name, command.Executor, command.Profile, command.Route, command.Candidates, command.MaxAttempts, command.FallbackOn, command.Role, command.Prompt, command.Timeout})
 	if err != nil {
 		return "", fmt.Errorf("encode command definition: %w", err)
 	}

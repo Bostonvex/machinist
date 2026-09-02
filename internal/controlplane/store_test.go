@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/environment"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -72,7 +73,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 2 {
+	if count != 0 || version != 3 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -83,7 +84,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=3;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=4;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -103,6 +104,105 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	var value string
 	if err := db.QueryRow(`SELECT value FROM future_data`).Scan(&value); err != nil || value != "preserved" {
 		t.Fatalf("future data = %q, %v", value, err)
+	}
+}
+
+func TestOpenStoreUpgradesVersionTwoWorkerCapabilities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL);
+INSERT INTO workers VALUES('legacy','legacy-worker','2026-01-01T00:00:00Z');
+PRAGMA user_version=2;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var version int
+	var environmentJSON, profilesJSON string
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
+		t.Fatal(err)
+	}
+	if version != 3 || environmentJSON != "{}" || profilesJSON != "{}" {
+		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
+	}
+}
+
+func TestPollPersistsWorkerEnvironmentAndProfiles(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	request := pollRequest("worker-a", []string{"local"}, []string{"machinist"})
+	request.Environment = environment.Detect([]string{"trusted"})
+	request.Profiles = map[string]protocol.ProfileCapability{
+		"local": {Harness: "opencode", Provider: "openai_compatible", AuthMode: "local", Models: []string{"coder"}, Available: true},
+	}
+	if run, err := store.Poll(t.Context(), request); err != nil || run != nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Workers) != 1 || snapshot.Workers[0].Environment.Digest != request.Environment.Digest || !snapshot.Workers[0].Profiles["local"].Available {
+		t.Fatalf("workers = %#v", snapshot.Workers)
+	}
+}
+
+func TestPollSelectsFirstCompatibleRouteProfile(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	command := config.ResolvedCommand{
+		Name: "implement", Route: "implementation", Candidates: []string{"dgx-local", "codex-subscription", "deepseek"},
+		MaxAttempts: 3, FallbackOn: []string{"capacity", "rate_limit"}, Role: "implementer",
+		Model: "coder", Prompt: "implement request", Timeout: time.Minute,
+	}
+	if _, err := store.CreateJob(t.Context(), "request", "machinist", "implement", command); err != nil {
+		t.Fatal(err)
+	}
+	incompatible := pollRequest("worker-a", []string{"codex-subscription"}, []string{"machinist"})
+	incompatible.Models = map[string][]string{"codex-subscription": {"deep"}}
+	if run, err := store.Poll(t.Context(), incompatible); err != nil || run != nil {
+		t.Fatalf("incompatible poll = %#v, %v", run, err)
+	}
+	request := pollRequest("worker-b", []string{"deepseek", "dgx-local"}, []string{"machinist"})
+	request.Models = map[string][]string{"deepseek": {"coder"}, "dgx-local": {"coder"}}
+	request.Profiles = map[string]protocol.ProfileCapability{
+		"dgx-local": {Harness: "opencode", Provider: "openai_compatible", AuthMode: "local", Available: true},
+		"deepseek":  {Harness: "pi", Provider: "deepseek", AuthMode: "api_key", Available: true},
+	}
+	run, err := store.Poll(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.Executor != "dgx-local" || run.Profile != "dgx-local" || run.Route != "implementation" || run.Harness != "opencode" || run.Provider != "openai_compatible" || run.AuthMode != "local" || run.Role != "implementer" || run.MaxAttempts != 3 {
+		t.Fatalf("run = %#v", run)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.Jobs[0].Runs[0]
+	if stored.Profile != "dgx-local" || stored.Route != "implementation" || stored.Harness != "opencode" || stored.Provider != "openai_compatible" || stored.Role != "implementer" {
+		t.Fatalf("stored run = %#v", stored)
+	}
+}
+
+func TestPollRejectsTamperedEnvironmentManifest(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "machinist.db"))
+	request := pollRequest("worker-a", nil, nil)
+	request.Environment = environment.Detect(nil)
+	request.Environment.Arch = "tampered"
+	if _, err := store.Poll(t.Context(), request); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("poll error = %v", err)
 	}
 }
 
@@ -1140,8 +1240,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
-		t.Fatalf("schema version = %d, %v, want 2", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+		t.Fatalf("schema version = %d, %v, want 3", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {

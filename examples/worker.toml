@@ -2,6 +2,12 @@
 # name is optional and defaults to the machine hostname.
 data_directory = "~/.machinist/worker"
 
+# Platform discovery is enabled by default. Tags are trusted operator policy,
+# not automatically inferred facts.
+[environment]
+detect = true
+tags = []
+
 [control_plane]
 url = "http://127.0.0.1:7331"
 token_file = "~/.machinist/server/worker.token"
@@ -13,6 +19,33 @@ models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 [executors.claude]
 command = ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
 models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
+
+# Typed profiles can be used instead of legacy executors. These examples are
+# commented so a fresh install does not require every harness or credential.
+#
+# [profiles.codex-subscription]
+# harness = "codex"
+# auth_mode = "subscription"
+# command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
+# models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
+#
+# [profiles.deepseek]
+# harness = "opencode"
+# provider = "deepseek"
+# auth_mode = "api_key"
+# secret_env = "DEEPSEEK_API_KEY"
+# command = ["opencode", "run", "--model={{machinist.model}}"]
+# models = { reasoner = "deepseek/deepseek-reasoner", chat = "deepseek/deepseek-chat" }
+#
+# [profiles.dgx-local]
+# harness = "opencode"
+# provider = "openai_compatible"
+# auth_mode = "local"
+# base_url = "http://127.0.0.1:8000/v1"
+# base_url_env = "OPENAI_BASE_URL"
+# command = ["opencode", "run", "--model={{machinist.model}}"]
+# models = { coder = "openai/local-coder" }
+# requires_tags = ["dgx-spark"]
 
 # Register each repository that managed workers may run in.
 # [repositories.my-project]

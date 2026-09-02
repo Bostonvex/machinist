@@ -113,6 +113,148 @@ path = "repository"
 	}
 }
 
+func TestLoadWorkerProfilesAreTypedAndBackwardCompatible(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "worker.toml")
+	writeTestFile(t, path, `name = "local"
+data_directory = "state"
+
+[environment]
+detect = true
+tags = [" Trusted ", "dgx-spark", "trusted"]
+
+[executors.legacy]
+command = ["legacy"]
+
+[profiles.deepseek]
+harness = "pi"
+provider = "deepseek"
+auth_mode = "api_key"
+secret_env = "DEEPSEEK_API_KEY"
+command = ["pi", "--model={{machinist.model}}"]
+models = { reasoner = "deepseek-reasoner" }
+
+[profiles.local]
+harness = "opencode"
+provider = "openai_compatible"
+auth_mode = "local"
+base_url = "http://127.0.0.1:8000/v1"
+base_url_env = "OPENAI_BASE_URL"
+command = ["opencode", "run", "--model={{machinist.model}}"]
+models = { coder = "local/coder" }
+requires_os = ["linux", "darwin"]
+requires_tags = ["dgx-spark"]
+`)
+	worker, err := LoadWorker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worker.Environment.Tags) != 2 || worker.Environment.Tags[0] != "dgx-spark" || worker.Environment.Tags[1] != "trusted" {
+		t.Fatalf("tags = %#v", worker.Environment.Tags)
+	}
+	if got := worker.ExecutorNames(); strings.Join(got, ",") != "deepseek,legacy,local" {
+		t.Fatalf("execution names = %#v", got)
+	}
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "local"}, "coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Profile != "local" || resolved.Harness != "opencode" || resolved.Provider != "openai_compatible" || resolved.AuthMode != "local" || resolved.Model != "local/coder" || resolved.Environment["OPENAI_BASE_URL"] != "http://127.0.0.1:8000/v1" {
+		t.Fatalf("resolved profile = %#v", resolved)
+	}
+}
+
+func TestLoadCommandAcceptsProfileAndRole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "[commands.implement]\nprofile=\"local\"\nrole=\"Implementer\"\n")
+	command, err := LoadCommand(path, "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Executor != "local" || command.Profile != "local" || command.Role != "implementer" {
+		t.Fatalf("command = %#v", command)
+	}
+}
+
+func TestLoadCommandResolvesOrderedRoute(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, `[routes.implementation]
+profiles=["local", "codex-subscription", "deepseek"]
+max_attempts=3
+fallback_on=["capacity", "rate_limit", "transient"]
+
+[commands.implement]
+route="implementation"
+role="implementer"
+`)
+	command, err := LoadCommand(path, "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Route != "implementation" || command.Executor != "" || command.MaxAttempts != 3 || strings.Join(command.Candidates, ",") != "local,codex-subscription,deepseek" {
+		t.Fatalf("command = %#v", command)
+	}
+	worker := Worker{Profiles: map[string]Profile{"codex-subscription": {}}}
+	command, err = worker.ResolveRoute(command, []string{"deepseek", "codex-subscription"})
+	if err != nil || command.Executor != "codex-subscription" || command.Profile != "codex-subscription" {
+		t.Fatalf("resolved route = %#v, %v", command, err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidRoutes(t *testing.T) {
+	for name, test := range map[string]struct{ route, want string }{
+		"no candidates": {"[routes.test]\nprofiles=[]\n", "between 1 and 8"},
+		"duplicates":    {"[routes.test]\nprofiles=[\"local\",\"local\"]\n", "duplicated"},
+		"bad fallback":  {"[routes.test]\nprofiles=[\"local\"]\nfallback_on=[\"guess\"]\n", "unsupported"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeTestFile(t, path, test.route+"[commands.test]\nroute=\"test\"\n")
+			if _, err := LoadCommand(path, "test"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadWorkerRejectsUnsafeProfiles(t *testing.T) {
+	for name, test := range map[string]struct{ body, want string }{
+		"unknown harness": {`[profiles.test]
+harness="deepseek"
+auth_mode="local"
+command=["agent"]
+`, "harness"},
+		"api key missing reference": {`[profiles.test]
+harness="pi"
+provider="deepseek"
+auth_mode="api_key"
+command=["pi"]
+`, "secret_env"},
+		"remote cleartext endpoint": {`[profiles.test]
+harness="opencode"
+auth_mode="local"
+base_url="http://10.0.0.5:8000/v1"
+base_url_env="OPENAI_BASE_URL"
+command=["opencode"]
+`, "allow_insecure_http"},
+		"executor collision": {`[executors.test]
+command=["legacy"]
+[profiles.test]
+harness="generic"
+auth_mode="local"
+command=["agent"]
+`, "both an executor and a profile"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "worker.toml")
+			writeTestFile(t, path, test.body)
+			if _, err := LoadWorker(path); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadConfigCombinesServerAndCommands(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "token"), "secret")

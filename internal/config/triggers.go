@@ -290,7 +290,7 @@ func (c Config) resolveTriggerSelection(identity string, selection TriggerSelect
 	if !ok {
 		return "", ResolvedCommand{}, fmt.Errorf("trigger %q references undefined command %q", identity, commandName)
 	}
-	resolved, err := resolveCommand(c.path, commandName, definition)
+	resolved, err := resolveCommand(c.path, commandName, definition, c.Routes)
 	if err != nil {
 		return "", ResolvedCommand{}, fmt.Errorf("trigger %q: %w", identity, err)
 	}

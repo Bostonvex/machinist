@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/environment"
 	"github.com/owainlewis/machinist/internal/protocol"
 	_ "modernc.org/sqlite"
 )
@@ -59,6 +60,12 @@ type Run struct {
 	ID             string    `json:"id"`
 	Command        string    `json:"command"`
 	Executor       string    `json:"executor"`
+	Profile        string    `json:"profile,omitempty"`
+	Route          string    `json:"route,omitempty"`
+	Harness        string    `json:"harness,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	AuthMode       string    `json:"auth_mode,omitempty"`
+	Role           string    `json:"role,omitempty"`
 	Model          string    `json:"model,omitempty"`
 	State          string    `json:"state"`
 	WorkerName     string    `json:"worker_name,omitempty"`
@@ -71,11 +78,13 @@ type Run struct {
 }
 
 type Worker struct {
-	InstanceID   string    `json:"instance_id"`
-	Name         string    `json:"name"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
-	Repositories []string  `json:"repositories"`
-	Connected    bool      `json:"connected"`
+	InstanceID   string                                `json:"instance_id"`
+	Name         string                                `json:"name"`
+	LastSeenAt   time.Time                             `json:"last_seen_at"`
+	Repositories []string                              `json:"repositories"`
+	Environment  environment.Manifest                  `json:"environment,omitempty"`
+	Profiles     map[string]protocol.ProfileCapability `json:"profiles,omitempty"`
+	Connected    bool                                  `json:"connected"`
 }
 
 type Snapshot struct {
@@ -172,7 +181,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 2
+	const schemaVersion = 3
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -192,6 +201,12 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 		if err := s.upgradeToVersionTwo(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 2: %w", err)
 		}
+		version = 2
+	}
+	if version == 2 {
+		if err := s.upgradeToVersionThree(ctx); err != nil {
+			return fmt.Errorf("upgrade database schema to version 3: %w", err)
+		}
 	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -206,9 +221,13 @@ CREATE TABLE IF NOT EXISTS runs (
  executor TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL, rendered_prompt TEXT NOT NULL,
  timeout_ms INTEGER NOT NULL, state TEXT NOT NULL, worker_instance TEXT, worker_name TEXT NOT NULL DEFAULT '',
  lease_token TEXT, lease_expires_at INTEGER, exit_code INTEGER, error TEXT, result TEXT, events TEXT,
- started_at TEXT, completed_at TEXT, duration_millis INTEGER, token_usage INTEGER);
+ started_at TEXT, completed_at TEXT, duration_millis INTEGER, token_usage INTEGER,
+ route TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL DEFAULT '',
+ provider TEXT NOT NULL DEFAULT '', auth_mode TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '',
+ candidate_profiles TEXT NOT NULL DEFAULT '[]', max_attempts INTEGER NOT NULL DEFAULT 1,
+ fallback_on TEXT NOT NULL DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS runs_dispatch ON runs(state, job_id);
-CREATE TABLE IF NOT EXISTS workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS workers (instance_id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TEXT NOT NULL, environment_json TEXT NOT NULL DEFAULT '{}', profiles_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS worker_repositories (worker_instance TEXT NOT NULL REFERENCES workers(instance_id) ON DELETE CASCADE, repository TEXT NOT NULL, PRIMARY KEY(worker_instance,repository));
 CREATE TABLE IF NOT EXISTS known_repositories (repository TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS trigger_state (identity TEXT PRIMARY KEY,family TEXT NOT NULL,config_signature TEXT NOT NULL,generation_id TEXT NOT NULL,next_due_at TEXT,pending_occurrence_at TEXT,last_attempt_at TEXT,last_success_at TEXT,last_job_state TEXT NOT NULL DEFAULT '',last_job_error TEXT NOT NULL DEFAULT '',health TEXT NOT NULL DEFAULT 'healthy',latest_error TEXT NOT NULL DEFAULT '',candidate_count INTEGER NOT NULL DEFAULT 0,admission_count INTEGER NOT NULL DEFAULT 0,coalesced_count INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
@@ -217,11 +236,65 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identi
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=2;`
+PRAGMA user_version=3;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) upgradeToVersionThree(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var workersTable int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='workers'`).Scan(&workersTable); err != nil {
+		return err
+	}
+	for _, column := range []string{"environment_json", "profiles_json"} {
+		if workersTable == 0 {
+			break
+		}
+		var present int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('workers') WHERE name=?`, column).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE workers ADD COLUMN `+column+` TEXT NOT NULL DEFAULT '{}'`); err != nil {
+				return err
+			}
+		}
+	}
+	var runsTable int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='runs'`).Scan(&runsTable); err != nil {
+		return err
+	}
+	if runsTable > 0 {
+		for _, definition := range []string{
+			"route TEXT NOT NULL DEFAULT ''", "profile TEXT NOT NULL DEFAULT ''",
+			"harness TEXT NOT NULL DEFAULT ''", "provider TEXT NOT NULL DEFAULT ''",
+			"auth_mode TEXT NOT NULL DEFAULT ''", "role TEXT NOT NULL DEFAULT ''",
+			"candidate_profiles TEXT NOT NULL DEFAULT '[]'", "max_attempts INTEGER NOT NULL DEFAULT 1",
+			"fallback_on TEXT NOT NULL DEFAULT '[]'",
+		} {
+			column := strings.Fields(definition)[0]
+			var present int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name=?`, column).Scan(&present); err != nil {
+				return err
+			}
+			if present == 0 {
+				if _, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN `+definition); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version=3`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // upgradeToVersionTwo removes the Shepherd schedule bookkeeping. Finished jobs
@@ -299,7 +372,11 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, 
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'queued')`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, repository, command.Prompt, command.Timeout.Milliseconds()); err != nil {
+	candidates, fallbackOn, err := routeFields(command)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, max(1, command.MaxAttempts), fallbackOn); err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -505,7 +582,11 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 		return "", false, err
 	}
 	command := admission.Command
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'queued')`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, admission.Repository, command.Prompt, command.Timeout.Milliseconds()); err != nil {
+	candidates, fallbackOn, err := routeFields(command)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, admission.Repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, max(1, command.MaxAttempts), fallbackOn); err != nil {
 		return "", false, fmt.Errorf("insert triggered run: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),pending_occurrence_at=NULL,last_attempt_at=?,health='active',latest_error='',admission_count=admission_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity)
@@ -718,6 +799,20 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if maxConcurrentJobs < 0 {
 		return nil, errors.New("max concurrent jobs cannot be negative")
 	}
+	if err := request.Environment.Validate(); err != nil {
+		return nil, err
+	}
+	environmentJSON, err := json.Marshal(request.Environment)
+	if err != nil {
+		return nil, fmt.Errorf("encode worker environment: %w", err)
+	}
+	profilesJSON, err := json.Marshal(request.Profiles)
+	if err != nil {
+		return nil, fmt.Errorf("encode worker profiles: %w", err)
+	}
+	if len(profilesJSON) > 64<<10 {
+		return nil, errors.New("worker profile capabilities exceed 65536 bytes")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -725,7 +820,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	defer tx.Rollback()
 	nowTime := s.now().UTC()
 	now := nowTime.Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at) VALUES(?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at`, request.InstanceID, request.Name, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at,environment_json,profiles_json) VALUES(?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at,environment_json=excluded.environment_json,profiles_json=excluded.profiles_json`, request.InstanceID, request.Name, now, string(environmentJSON), string(profilesJSON)); err != nil {
 		return nil, fmt.Errorf("update worker: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, reclaimExpiredLeasesSQL, nowTime.UnixNano()); err != nil {
@@ -743,7 +838,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 			return nil, fmt.Errorf("store worker repository: %w", err)
 		}
 	}
-	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
+	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
 	if err == nil {
 		if err := tx.Commit(); err != nil {
 			return nil, err
@@ -763,22 +858,40 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	}
 
 	executors := stringSet(request.Executors)
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,r.route,r.profile,r.harness,r.provider,r.auth_mode,r.role,r.candidate_profiles,r.max_attempts,r.fallback_on,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
 	}
 	var selected protocol.RunSpec
 	for rows.Next() {
 		var candidate protocol.RunSpec
-		var jobState string
-		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Command, &candidate.CommandHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &jobState); err != nil {
+		var jobState, candidateProfiles, fallbackOn string
+		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Command, &candidate.CommandHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &candidate.Route, &candidate.Profile, &candidate.Harness, &candidate.Provider, &candidate.AuthMode, &candidate.Role, &candidateProfiles, &candidate.MaxAttempts, &fallbackOn, &jobState); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if err := json.Unmarshal([]byte(candidateProfiles), &candidate.Candidates); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode run candidate profiles: %w", err)
+		}
+		if err := json.Unmarshal([]byte(fallbackOn), &candidate.FallbackOn); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode run fallback policy: %w", err)
 		}
 		if atCapacity && jobState != "running" {
 			continue
 		}
+		if candidate.Route != "" {
+			candidate.Executor = selectRouteProfile(candidate.Candidates, executors, request.Models, candidate.Model)
+			candidate.Profile = candidate.Executor
+		}
 		if executors[candidate.Executor] && repositories[candidate.Repository] && supportsModel(request.Models, candidate.Executor, candidate.Model) {
+			if profile, ok := request.Profiles[candidate.Executor]; ok {
+				candidate.Profile = candidate.Executor
+				candidate.Harness = profile.Harness
+				candidate.Provider = profile.Provider
+				candidate.AuthMode = profile.AuthMode
+			}
 			selected = candidate
 			break
 		}
@@ -797,7 +910,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 		return nil, err
 	}
 	expiresAt := nowTime.Add(leaseDuration).UnixNano()
-	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='running',worker_instance=?,worker_name=?,lease_token=?,lease_expires_at=?,started_at=? WHERE id=? AND state='queued'`, request.InstanceID, request.Name, selected.LeaseToken, expiresAt, now, selected.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='running',worker_instance=?,worker_name=?,lease_token=?,lease_expires_at=?,started_at=?,executor=?,profile=?,harness=?,provider=?,auth_mode=? WHERE id=? AND state='queued'`, request.InstanceID, request.Name, selected.LeaseToken, expiresAt, now, selected.Executor, selected.Profile, selected.Harness, selected.Provider, selected.AuthMode, selected.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1058,7 +1171,7 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.prompt,j.repository,j.github_issue_title,j.command,j.trigger_identity,j.occurrence_key,j.trigger_subject,j.state,j.created_at,j.updated_at,
-COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage
+COALESCE(r.id,''),COALESCE(r.command,''),COALESCE(r.executor,''),COALESCE(r.profile,''),COALESCE(r.route,''),COALESCE(r.harness,''),COALESCE(r.provider,''),COALESCE(r.auth_mode,''),COALESCE(r.role,''),COALESCE(r.model,''),COALESCE(r.state,''),COALESCE(NULLIF(r.worker_name,''),w.name,''),r.exit_code,COALESCE(r.error,''),COALESCE(r.started_at,''),COALESCE(r.completed_at,''),r.duration_millis,r.token_usage
 FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_id=r.worker_instance ORDER BY j.created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1070,7 +1183,7 @@ FROM jobs j LEFT JOIN runs r ON r.job_id=j.id LEFT JOIN workers w ON w.instance_
 		var run Run
 		var created, updated, started, completed string
 		if err := rows.Scan(&job.ID, &job.Prompt, &job.Repository, &job.GitHubIssueTitle, &job.Command, &job.TriggerID, &job.OccurrenceKey, &job.TriggerSubject, &job.State, &created, &updated,
-			&run.ID, &run.Command, &run.Executor, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
+			&run.ID, &run.Command, &run.Executor, &run.Profile, &run.Route, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &run.Model, &run.State, &run.WorkerName, &run.ExitCode, &run.Error, &started, &completed, &run.DurationMillis, &run.TokenUsage); err != nil {
 			return nil, err
 		}
 		job.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -1115,19 +1228,27 @@ func elapsedMillis(startedAt, completedAt string) *int64 {
 }
 
 func (s *Store) listWorkers(ctx context.Context) ([]Worker, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,name,last_seen_at FROM workers ORDER BY name,instance_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT instance_id,name,last_seen_at,environment_json,profiles_json FROM workers ORDER BY name,instance_id`)
 	if err != nil {
 		return nil, err
 	}
 	workers := []Worker{}
 	for rows.Next() {
-		worker := Worker{Repositories: []string{}}
-		var lastSeen string
-		if err := rows.Scan(&worker.InstanceID, &worker.Name, &lastSeen); err != nil {
+		worker := Worker{Repositories: []string{}, Profiles: map[string]protocol.ProfileCapability{}}
+		var lastSeen, environmentJSON, profilesJSON string
+		if err := rows.Scan(&worker.InstanceID, &worker.Name, &lastSeen, &environmentJSON, &profilesJSON); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		worker.LastSeenAt, _ = time.Parse(time.RFC3339Nano, lastSeen)
+		if err := json.Unmarshal([]byte(environmentJSON), &worker.Environment); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode worker %q environment: %w", worker.InstanceID, err)
+		}
+		if err := json.Unmarshal([]byte(profilesJSON), &worker.Profiles); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode worker %q profiles: %w", worker.InstanceID, err)
+		}
 		workers = append(workers, worker)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
@@ -1156,8 +1277,33 @@ func (s *Store) listWorkers(ctx context.Context) ([]Worker, error) {
 
 func scanRunSpec(row *sql.Row) (protocol.RunSpec, error) {
 	var run protocol.RunSpec
-	err := row.Scan(&run.ID, &run.JobID, &run.Command, &run.CommandHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken)
+	var candidates, fallbackOn string
+	err := row.Scan(&run.ID, &run.JobID, &run.Command, &run.CommandHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken, &run.Route, &run.Profile, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &candidates, &run.MaxAttempts, &fallbackOn)
+	if err == nil {
+		err = errors.Join(json.Unmarshal([]byte(candidates), &run.Candidates), json.Unmarshal([]byte(fallbackOn), &run.FallbackOn))
+	}
 	return run, err
+}
+
+func selectRouteProfile(candidates []string, executors map[string]bool, models map[string][]string, model string) string {
+	for _, profile := range candidates {
+		if executors[profile] && supportsModel(models, profile, model) {
+			return profile
+		}
+	}
+	return ""
+}
+
+func routeFields(command config.ResolvedCommand) (string, string, error) {
+	candidates, err := json.Marshal(command.Candidates)
+	if err != nil {
+		return "", "", fmt.Errorf("encode route candidates: %w", err)
+	}
+	fallbackOn, err := json.Marshal(command.FallbackOn)
+	if err != nil {
+		return "", "", fmt.Errorf("encode route fallback policy: %w", err)
+	}
+	return string(candidates), string(fallbackOn), nil
 }
 
 func stringSet(values []string) map[string]bool {
