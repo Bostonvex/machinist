@@ -6,13 +6,16 @@ context from implementation through every repair.
 
 1. Create a branch and ask the thread to implement the task, have a fresh subagent review
    the diff, run the tests, and commit.
-2. Push and open the pull request with `gh pr create --fill`.
+2. Ask the thread for a title and body as JSON, push, and open the pull request.
 3. Wait for feedback. Feedback is anything newer than the last push: an unresolved review
    thread with a new comment, a review that requests changes, or a failing check on the
    current head.
-4. Hand the feedback to the same thread, which fixes it, replies in each thread, and
-   commits.
-5. Push and go back to step 3, at most `FLOW_MAX_ROUNDS` times.
+4. Hand the feedback to the same thread. It triages each item: real defects get the
+   smallest fix, nitpicks and impossible edge cases get a short reply saying why, unrelated
+   failing checks get a separate commit or are called a flake. It replies in and resolves
+   every thread it handled. A person can reopen any of them.
+5. Push and go back to step 3, at most `FLOW_MAX_ROUNDS` times, then wait once more for the
+   verdict on the last push.
 
 The loop ends with exit 0 when the pull request is approved with green checks, when no new
 feedback arrives within `FLOW_FEEDBACK_WAIT` seconds, or when the thread decides nothing
@@ -37,6 +40,9 @@ the first run. The SDK bundles its own Codex binary, so `codex` need not be on t
 the worker must already be logged in to Codex. To lock the resolved dependency next to the script, run
 `uv lock --script scripts/flow.py` and add `--locked` to the executor command.
 
+Token usage is written to `MACHINIST_TOKEN_USAGE_PATH`, so Machinist records it for the run
+the same way it does for a direct Codex executor.
+
 ## Run it
 
 ```sh
@@ -52,7 +58,8 @@ Or queue it through the control plane with `machinist submit`, or select it from
 ## Limits
 
 Machinist sees only the script's output and exit code. A timeout or cancellation kills the
-script and the Codex process underneath it. The script never resolves review threads and
-never merges; those stay with people. Bot reviewers that reply within minutes fit the
+script and the Codex process underneath it. The thread resolves review threads it has
+answered, because branch protection often requires it; reopen any you disagree with. The
+script never merges. Bot reviewers that reply within minutes fit the
 default wait of 30 minutes; raise `FLOW_FEEDBACK_WAIT` and the command timeout for repos
 that rely on human review.

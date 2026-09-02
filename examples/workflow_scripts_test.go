@@ -98,23 +98,25 @@ class TurnStatus(enum.Enum):
 
 class Usage:
     def __init__(self):
-        self.input_tokens, self.output_tokens = 10, 5
+        self.input_tokens, self.cached_input_tokens, self.output_tokens = 10, 4, 5
 
 class TurnResult:
-    def __init__(self, prompt):
-        self.id, self.status, self.error, self.final_response = "turn-1", TurnStatus.completed, None, "done"
-        self.usage = type("U", (), {"last": Usage()})()
+    def __init__(self, response):
+        self.id, self.status, self.error, self.final_response = "turn-1", TurnStatus.completed, None, response
+        self.usage = type("U", (), {"total": Usage()})()
 
 class Thread:
     id = "thread-123"
-    def run(self, prompt, **kwargs):
+    def run(self, prompt, output_schema=None, **kwargs):
         with open(os.environ["AGENT_LOG"], "a") as log:
             log.write(prompt + "\n---\n")
+        if output_schema is not None:
+            return TurnResult('{"title": "feat: add --json flag", "body": "Summary\\n\\nFixes #1"}')
         with open("main.go", "a") as source:
             source.write("change\n")
         subprocess.run(["git", "add", "main.go"], check=True)
         subprocess.run(["git", "commit", "--quiet", "-m", "agent change"], check=True)
-        return TurnResult(prompt)
+        return TurnResult("done")
 
 class Codex:
     def __enter__(self):
@@ -136,14 +138,14 @@ class Codex:
 case "$1 $2" in
 "repo view") printf '{"nameWithOwner":"owner/repo","defaultBranchRef":{"name":"main"}}\n' ;;
 "api user") printf '{"login":"bot"}\n' ;;
-"pr create") printf 'https://github.com/owner/repo/pull/7\n' ;;
+"pr create") printf '%s\n' "$*" >> "$GH_LOG"; printf 'https://github.com/owner/repo/pull/7\n' ;;
 "pr checks")
   if [ "$(cat "$GH_STATE")" = 1 ]; then printf 'no checks reported on the branch\n' >&2; exit 1; fi
   printf '[{"name":"tests","bucket":"pass","link":""}]\n' ;;
 "api graphql")
   count=0; [ ! -f "$GH_STATE" ] || count=$(cat "$GH_STATE"); count=$((count + 1)); printf '%s' "$count" > "$GH_STATE"
   if [ "$count" -eq 1 ]; then
-    printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"path":"main.go","line":3,"comments":{"nodes":[{"author":{"login":"reviewer"},"body":"Handle the empty case","createdAt":"2999-01-01T00:00:00Z","url":"https://github.com/owner/repo/pull/7#r1"}]}}]},"reviews":{"nodes":[]}}}}}'
+    printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_1","isResolved":false,"path":"main.go","line":3,"comments":{"nodes":[{"author":{"login":"reviewer"},"body":"Handle the empty case","createdAt":"2999-01-01T00:00:00Z","url":"https://github.com/owner/repo/pull/7#r1"}]}}]},"reviews":{"nodes":[]}}}}}'
   else
     printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviews":{"nodes":[{"author":{"login":"reviewer"},"state":"APPROVED","submittedAt":"2999-01-01T00:00:00Z"}]}}}}}'
   fi ;;
@@ -158,6 +160,8 @@ esac
 		t.Fatal(err)
 	}
 	agentLog := filepath.Join(directory, "agent.log")
+	ghLog := filepath.Join(directory, "gh.log")
+	usage := filepath.Join(directory, "usage")
 	command := exec.Command(python, script)
 	command.Dir = repository
 	command.Stdin = bytes.NewBufferString("Add a --json flag")
@@ -166,6 +170,8 @@ esac
 		"PYTHONPATH="+filepath.Dir(site),
 		"GH_STATE="+state,
 		"AGENT_LOG="+agentLog,
+		"GH_LOG="+ghLog,
+		"MACHINIST_TOKEN_USAGE_PATH="+usage,
 		"FLOW_BASE_BRANCH=main",
 		"FLOW_MAX_ROUNDS=2",
 		"FLOW_FEEDBACK_WAIT=0",
@@ -185,8 +191,15 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(prompts), "---") != 2 || !strings.Contains(string(prompts), "Add a --json flag") || !strings.Contains(string(prompts), "Handle the empty case") {
+	if strings.Count(string(prompts), "---") != 3 || !strings.Contains(string(prompts), "Add a --json flag") || !strings.Contains(string(prompts), "PRRT_1") || !strings.Contains(string(prompts), "Handle the empty case") {
 		t.Fatalf("agent prompts = %s", prompts)
+	}
+	created, err := os.ReadFile(ghLog)
+	if err != nil || !strings.Contains(string(created), "--title feat: add --json flag --body Summary") {
+		t.Fatalf("gh pr create arguments = %s, %v", created, err)
+	}
+	if tokens, err := os.ReadFile(usage); err != nil || strings.TrimSpace(string(tokens)) != "15" {
+		t.Fatalf("token usage = %q, %v", tokens, err)
 	}
 	pushed, err := exec.Command("git", "-C", remote, "log", "--oneline", "--all").Output()
 	if err != nil || strings.Count(string(pushed), "agent change") != 2 {
