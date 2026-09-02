@@ -75,6 +75,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			var responseErr *ResponseError
+			if errors.As(err, &responseErr) && responseErr.Status == 409 {
+				fmt.Fprintf(w.stderr, "machinist: report run %s: %v\n", run.ID, err)
+				continue
+			}
 			return err
 		}
 	}
