@@ -1,6 +1,6 @@
 # Adaptive agent platform plan
 
-Status: accepted for incremental implementation
+Status: release candidate implemented; measured pilot and production cutover pending
 
 This plan evolves Machinist into the default orchestration layer for unattended
 agentic coding while preserving the useful controls from Buzz Workspace and the
@@ -23,6 +23,29 @@ and any stdin-driven executable can already be used. It is not a complete
 replacement today: routing is executor/model only, a job has one run, Windows
 is unsupported, and its UI does not expose deep agent, cache, GPU, or retry
 telemetry. Those gaps are the scope of this plan.
+
+## Release-candidate implementation status
+
+The current branch implements the execution-platform portion of this plan:
+
+- environment manifests and worker capability health;
+- typed multi-harness profiles for generic commands, Codex, Claude Code,
+  OpenCode, and Pi;
+- subscription, API-key, DeepSeek, local, and OpenAI-compatible provider
+  configurations with worker-local credentials;
+- ordered routes, model aliases, fenced attempts, classified fallback, compact
+  retry handoff, remote cancellation, and process-tree termination;
+- a fail-open read-only bridge to the existing agent/token/cache/DGX collector
+  and an Agents & infra dashboard inside the Machinist UI;
+- native macOS, Linux, and Windows amd64/arm64 builds, including Windows Job
+  Object cancellation and staged self-update;
+- schema migrations through version 6 with data-preservation coverage.
+
+The release candidate does not yet contain a native semantic role graph,
+GitHub `FACTORY:RUN` writer, independent-review policy engine, production
+merge/deploy engine, measured Buzz-vs-Machinist benchmark, or automatic
+capacity-based routing. These remain ASF/repository workflow responsibilities
+or pilot gates. See [the source-verified comparison](buzz-asf-comparison.md).
 
 ## Side-by-side capability matrix
 
@@ -149,10 +172,10 @@ tool payloads, credentials, or command-line session tokens. Detected facts are
 advisory; operator tags are the only facts allowed to confer trust or authority.
 
 Platform execution uses argument arrays rather than shell interpolation. The
-pilot supports native macOS/Linux and Windows through WSL. Native Windows x64
-adds a Windows runner using Job Objects for process-tree cancellation, Windows
-path handling, PowerShell-aware service installation, and release artifacts.
-Legacy 32-bit x86 Windows is not targeted.
+release candidate supports native macOS/Linux plus native Windows amd64/arm64.
+The Windows runner uses Job Objects for process-tree cancellation and includes
+Windows path handling, PowerShell-aware service installation, and release
+artifacts. Legacy 32-bit x86 Windows is not targeted.
 
 ## Harness adapters
 

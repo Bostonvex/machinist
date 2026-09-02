@@ -101,8 +101,18 @@ Each execution is a durable attempt with its own ID and lease fence. A failed
 attempt is retried only when its normalized error class appears in `fallback_on`
 and `max_attempts` has not been reached. The next attempt rotates to the next
 compatible route candidate. Stale attempt or lease completions are rejected.
+On attempts after the first, the worker appends a compact handoff containing only
+the attempt budget and previous error class. It also exposes these as
+`MACHINIST_ATTEMPT_NUMBER`, `MACHINIST_MAX_ATTEMPTS`, and
+`MACHINIST_PREVIOUS_ERROR_CLASS`. It does not replay the previous harness
+transcript, which limits context growth and avoids leaking error text into a new
+provider.
 Lease-loss recovery remains compatible with legacy executors while recording an
 abandoned attempt, so interrupted work is visible rather than silently erased.
+Legacy commands without a route receive a bounded two-attempt lease-recovery
+budget: one initial execution and one redispatch after a lost worker lease. A
+second lost lease fails durably instead of looping forever. Routed commands use
+their configured `max_attempts` value.
 
 Current worker classifications are `configuration`, `harness_crash`, `timeout`,
 `cancelled`, and `test_failure`. Adapters may additionally report `rate_limit`,

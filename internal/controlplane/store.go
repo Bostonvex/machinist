@@ -33,9 +33,11 @@ var (
 
 const leaseDuration = 30 * time.Second
 const maxTriggerErrorLength = 2000
+const defaultLegacyMaxAttempts = 2
 
-// reclaimExpiredLeasesSQL returns running runs whose lease lapsed to the queue.
-const reclaimExpiredLeasesSQL = `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL,current_attempt_id='' WHERE state='running' AND cancel_requested=0 AND (lease_expires_at IS NULL OR lease_expires_at<=?)`
+// reclaimExpiredLeasesSQL returns running runs whose lease lapsed to the queue
+// only while their attempt budget still permits another fenced execution.
+const reclaimExpiredLeasesSQL = `UPDATE runs SET state='queued',worker_instance=NULL,worker_name='',lease_token=NULL,lease_expires_at=NULL,started_at=NULL,current_attempt_id='',error='worker lease expired; redispatching within attempt budget',last_error_class='transient' WHERE state='running' AND cancel_requested=0 AND attempt_count<max_attempts AND (lease_expires_at IS NULL OR lease_expires_at<=?)`
 
 const abandonExpiredAttemptsSQL = `UPDATE attempts SET state='abandoned',error='worker lease expired',error_class='transient',completed_at=? WHERE state='running' AND run_id IN (SELECT id FROM runs WHERE state='running' AND cancel_requested=0 AND (lease_expires_at IS NULL OR lease_expires_at<=?))`
 
@@ -207,7 +209,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 5
+	const schemaVersion = 6
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -244,6 +246,12 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 	if version == 4 {
 		if err := s.upgradeToVersionFive(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 5: %w", err)
+		}
+		version = 5
+	}
+	if version == 5 {
+		if err := s.upgradeToVersionSix(ctx); err != nil {
+			return fmt.Errorf("upgrade database schema to version 6: %w", err)
 		}
 	}
 	const schema = `
@@ -284,7 +292,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identi
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=5;`
+PRAGMA user_version=6;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -416,6 +424,29 @@ func (s *Store) upgradeToVersionFive(ctx context.Context) error {
 	return tx.Commit()
 }
 
+func (s *Store) upgradeToVersionSix(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var runsTable int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='runs'`).Scan(&runsTable); err != nil {
+		return err
+	}
+	if runsTable > 0 {
+		// Version 5 stored one attempt for legacy commands. Version 6 keeps one
+		// bounded lease-loss recovery without changing explicit route budgets.
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET max_attempts=? WHERE route='' AND max_attempts=1 AND state IN ('queued','running')`, defaultLegacyMaxAttempts); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version=6`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // upgradeToVersionTwo removes the Shepherd schedule bookkeeping. Finished jobs
 // keep their rows. Queued schedule jobs are failed so they cannot overlap a
 // replacement trigger, and a running one blocks the upgrade until it finishes.
@@ -495,7 +526,7 @@ func (s *Store) CreateJob(ctx context.Context, prompt, repository, name string, 
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, max(1, command.MaxAttempts), fallbackOn); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, runMaxAttempts(command), fallbackOn); err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -705,7 +736,7 @@ WHERE github_trigger_requests.state='pending'`, admission.Identity, admission.Oc
 	if err != nil {
 		return "", false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, admission.Repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, max(1, command.MaxAttempts), fallbackOn); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`, runID, jobID, command.Name, command.Hash, command.Executor, command.Model, admission.Repository, command.Prompt, command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode, command.Role, candidates, runMaxAttempts(command), fallbackOn); err != nil {
 		return "", false, fmt.Errorf("insert triggered run: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE trigger_state SET next_due_at=COALESCE(?,next_due_at),pending_occurrence_at=NULL,last_attempt_at=?,health='active',latest_error='',admission_count=admission_count+1,updated_at=? WHERE identity=?`, nullableTimeText(admission.NextDueAt), now, now, admission.Identity)
@@ -942,14 +973,8 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO workers(instance_id,name,last_seen_at,environment_json,profiles_json) VALUES(?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET name=excluded.name,last_seen_at=excluded.last_seen_at,environment_json=excluded.environment_json,profiles_json=excluded.profiles_json`, request.InstanceID, request.Name, now, string(environmentJSON), string(profilesJSON)); err != nil {
 		return nil, fmt.Errorf("update worker: %w", err)
 	}
-	if _, err := finalizeExpiredCancellations(ctx, tx, nowTime); err != nil {
+	if _, err := recoverExpiredRuns(ctx, tx, nowTime); err != nil {
 		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, abandonExpiredAttemptsSQL, now, nowTime.UnixNano()); err != nil {
-		return nil, fmt.Errorf("abandon expired attempts: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, reclaimExpiredLeasesSQL, nowTime.UnixNano()); err != nil {
-		return nil, fmt.Errorf("reclaim expired leases: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM worker_repositories WHERE worker_instance=?`, request.InstanceID); err != nil {
 		return nil, fmt.Errorf("clear worker repositories: %w", err)
@@ -963,7 +988,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 			return nil, fmt.Errorf("store worker repository: %w", err)
 		}
 	}
-	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on,current_attempt_id,attempt_count FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
+	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,fallback_on,current_attempt_id,attempt_count,last_error_class FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
 	if err == nil {
 		if err := tx.Commit(); err != nil {
 			return nil, err
@@ -983,7 +1008,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	}
 
 	executors := stringSet(request.Executors)
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,r.route,r.profile,r.harness,r.provider,r.auth_mode,r.role,r.candidate_profiles,r.max_attempts,r.fallback_on,r.attempt_count,r.next_candidate,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.job_id,r.command,r.command_hash,r.executor,r.model,r.repository,r.rendered_prompt,r.timeout_ms,r.route,r.profile,r.harness,r.provider,r.auth_mode,r.role,r.candidate_profiles,r.max_attempts,r.fallback_on,r.attempt_count,r.next_candidate,r.last_error_class,j.state FROM runs r JOIN jobs j ON j.id=r.job_id WHERE r.state='queued' ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -992,7 +1017,7 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 		var candidate protocol.RunSpec
 		var jobState, candidateProfiles, fallbackOn string
 		var nextCandidate int
-		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Command, &candidate.CommandHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &candidate.Route, &candidate.Profile, &candidate.Harness, &candidate.Provider, &candidate.AuthMode, &candidate.Role, &candidateProfiles, &candidate.MaxAttempts, &fallbackOn, &candidate.AttemptNumber, &nextCandidate, &jobState); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.JobID, &candidate.Command, &candidate.CommandHash, &candidate.Executor, &candidate.Model, &candidate.Repository, &candidate.RenderedPrompt, &candidate.TimeoutMillis, &candidate.Route, &candidate.Profile, &candidate.Harness, &candidate.Provider, &candidate.AuthMode, &candidate.Role, &candidateProfiles, &candidate.MaxAttempts, &fallbackOn, &candidate.AttemptNumber, &nextCandidate, &candidate.PreviousErrorClass, &jobState); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1330,25 +1355,51 @@ func (s *Store) ReclaimExpiredLeases(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback()
 	now := s.now().UTC()
-	cancelled, err := finalizeExpiredCancellations(ctx, tx, now)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, abandonExpiredAttemptsSQL, now.Format(time.RFC3339Nano), now.UnixNano()); err != nil {
-		return 0, fmt.Errorf("abandon expired attempts: %w", err)
-	}
-	result, err := tx.ExecContext(ctx, reclaimExpiredLeasesSQL, now.UnixNano())
-	if err != nil {
-		return 0, fmt.Errorf("reclaim expired leases: %w", err)
-	}
-	reclaimed, err := result.RowsAffected()
+	recovered, err := recoverExpiredRuns(ctx, tx, now)
 	if err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return reclaimed + cancelled, nil
+	return recovered, nil
+}
+
+func recoverExpiredRuns(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
+	cancelled, err := finalizeExpiredCancellations(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
+	completedAt := now.Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, abandonExpiredAttemptsSQL, completedAt, now.UnixNano()); err != nil {
+		return 0, fmt.Errorf("abandon expired attempts: %w", err)
+	}
+	const exhaustedReason = "worker lease expired and attempt budget was exhausted"
+	exhaustedResult, err := tx.ExecContext(ctx, `UPDATE runs SET state='failed',exit_code=1,error=?,last_error_class='transient',completed_at=?,lease_token=NULL,lease_expires_at=NULL,current_attempt_id='' WHERE state='running' AND cancel_requested=0 AND attempt_count>=max_attempts AND (lease_expires_at IS NULL OR lease_expires_at<=?)`, exhaustedReason, completedAt, now.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("fail attempt-budget-exhausted runs: %w", err)
+	}
+	exhausted, err := exhaustedResult.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if exhausted > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',updated_at=? WHERE state='running' AND id IN (SELECT job_id FROM runs WHERE state='failed' AND completed_at=? AND error=?)`, completedAt, completedAt, exhaustedReason); err != nil {
+			return 0, fmt.Errorf("fail jobs after attempt budget exhaustion: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE trigger_state SET last_job_state='failed',last_job_error=?,health='failed',latest_error=?,updated_at=? WHERE EXISTS (SELECT 1 FROM jobs j JOIN runs r ON r.job_id=j.id WHERE j.trigger_identity=trigger_state.identity AND j.trigger_generation_id=trigger_state.generation_id AND r.state='failed' AND r.completed_at=? AND r.error=?)`, exhaustedReason, exhaustedReason, completedAt, completedAt, exhaustedReason); err != nil {
+			return 0, fmt.Errorf("record trigger attempt budget exhaustion: %w", err)
+		}
+	}
+	reclaimedResult, err := tx.ExecContext(ctx, reclaimExpiredLeasesSQL, now.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("reclaim expired leases: %w", err)
+	}
+	reclaimed, err := reclaimedResult.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return cancelled + exhausted + reclaimed, nil
 }
 
 func finalizeExpiredCancellations(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
@@ -1619,7 +1670,7 @@ func (s *Store) listWorkers(ctx context.Context) ([]Worker, error) {
 func scanRunSpec(row *sql.Row) (protocol.RunSpec, error) {
 	var run protocol.RunSpec
 	var candidates, fallbackOn string
-	err := row.Scan(&run.ID, &run.JobID, &run.Command, &run.CommandHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken, &run.Route, &run.Profile, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &candidates, &run.MaxAttempts, &fallbackOn, &run.AttemptID, &run.AttemptNumber)
+	err := row.Scan(&run.ID, &run.JobID, &run.Command, &run.CommandHash, &run.Executor, &run.Model, &run.Repository, &run.RenderedPrompt, &run.TimeoutMillis, &run.LeaseToken, &run.Route, &run.Profile, &run.Harness, &run.Provider, &run.AuthMode, &run.Role, &candidates, &run.MaxAttempts, &fallbackOn, &run.AttemptID, &run.AttemptNumber, &run.PreviousErrorClass)
 	if err == nil {
 		err = errors.Join(json.Unmarshal([]byte(candidates), &run.Candidates), json.Unmarshal([]byte(fallbackOn), &run.FallbackOn))
 	}
@@ -1646,6 +1697,13 @@ func routeFields(command config.ResolvedCommand) (string, string, error) {
 		return "", "", fmt.Errorf("encode route fallback policy: %w", err)
 	}
 	return string(candidates), string(fallbackOn), nil
+}
+
+func runMaxAttempts(command config.ResolvedCommand) int {
+	if command.MaxAttempts > 0 {
+		return command.MaxAttempts
+	}
+	return defaultLegacyMaxAttempts
 }
 
 func stringSet(values []string) map[string]bool {

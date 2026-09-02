@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,6 +198,7 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	if command.Environment == nil {
 		command.Environment = make(map[string]string)
 	}
+	command.Prompt = retryPrompt(command.Prompt, spec)
 	for name, value := range w.config.TelemetryEnvironment() {
 		command.Environment[name] = value
 	}
@@ -206,6 +208,9 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		"MACHINIST_ROUTE": spec.Route, "MACHINIST_PROFILE": command.Profile,
 		"MACHINIST_HARNESS": command.Harness, "MACHINIST_PROVIDER": command.Provider,
 		"MACHINIST_MODEL": command.Model, "MACHINIST_WORKER_INSTANCE": w.instanceID,
+		"MACHINIST_ATTEMPT_NUMBER":       strconv.Itoa(spec.AttemptNumber),
+		"MACHINIST_MAX_ATTEMPTS":         strconv.Itoa(spec.MaxAttempts),
+		"MACHINIST_PREVIOUS_ERROR_CLASS": spec.PreviousErrorClass,
 	} {
 		if value != "" {
 			command.Environment[name] = value
@@ -236,6 +241,13 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		completion.ErrorClass = classifyExecutionError(result.State, runErr)
 	}
 	return completion
+}
+
+func retryPrompt(prompt string, spec protocol.RunSpec) string {
+	if spec.AttemptNumber <= 1 || spec.PreviousErrorClass == "" {
+		return prompt
+	}
+	return fmt.Sprintf("%s\n\n[Machinist retry handoff]\nAttempt %d of %d. Previous failure class: %s. Check existing repository state before repeating work or external side effects.", prompt, spec.AttemptNumber, spec.MaxAttempts, spec.PreviousErrorClass)
 }
 
 func classifyExecutionError(state runner.State, err error) string {

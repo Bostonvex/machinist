@@ -20,6 +20,22 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
+func TestRetryPromptIsCompactAndOnlyAddedForRetries(t *testing.T) {
+	prompt := "implement the accepted plan"
+	if got := retryPrompt(prompt, protocol.RunSpec{AttemptNumber: 1, MaxAttempts: 3}); got != prompt {
+		t.Fatalf("first attempt prompt = %q", got)
+	}
+	got := retryPrompt(prompt, protocol.RunSpec{AttemptNumber: 2, MaxAttempts: 3, PreviousErrorClass: "harness_crash"})
+	for _, want := range []string{prompt, "Attempt 2 of 3", "harness_crash", "existing repository state"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("retry prompt %q does not contain %q", got, want)
+		}
+	}
+	if len(got)-len(prompt) > 240 {
+		t.Fatalf("retry handoff is too large: %d bytes", len(got)-len(prompt))
+	}
+}
+
 func TestManagedWorkerExecutesControlPlaneRun(t *testing.T) {
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repository")
