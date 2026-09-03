@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="680" viewBox="0 0 1440 680" role="img" aria-labelledby="title desc">
+  <title id="title">Machinist dashboard new run form</title>
+  <desc id="desc">Scalable interface capture of the Machinist dashboard with the foreman command, my-project repository, terra model alias, and headless execution selected.</desc>
+  <style>
+    .sans{font-family:Arial,sans-serif}.serif{font-family:Georgia,serif}.mono{font-family:"Courier New",monospace}.fg{fill:#edf1ef}.muted{fill:#96a09d}.cyan{fill:#69b5d1}.green{fill:#83c795}.line{stroke:#303536;stroke-width:1.5}.body{font-size:16px}.small{font-size:13px}.label{font-size:12px;font-weight:700;letter-spacing:1.1px}.field{fill:#111516;stroke:#3a4143;stroke-width:1.4}.card{fill:#191d1e;stroke:#34505a;stroke-width:1.6}
+  </style>
+  <rect width="1440" height="680" fill="#151819"/><rect width="236" height="680" fill="#111415"/>
+  <path d="M28 58V35c0-10 6-16 15-16s15 6 15 16v11h6V35c0-10 6-16 15-16s15 6 15 16v23" fill="none" stroke="#69b5d1" stroke-width="5" stroke-linecap="round"/>
+  <text x="108" y="48" class="serif fg" font-size="27" font-weight="600">machinist</text>
+  <g class="sans muted" font-size="16">
+    <rect x="0" y="92" width="236" height="48" fill="#1b2021"/><rect x="14" y="104" width="3" height="24" fill="#69b5d1"/><text x="40" y="123" class="fg">⌁  Runs</text><text x="205" y="123">5</text>
+    <text x="40" y="173">▥  Analytics</text><text x="40" y="223">◎  Agents &amp; infra</text><text x="40" y="273">▤  Workers</text><text x="40" y="323">◷  Triggers</text><text x="205" y="323">0</text><text x="40" y="373">▣  Commands</text>
+    <line x1="22" y1="586" x2="214" y2="586" class="line"/><text x="40" y="622">▤  1 worker online</text><text x="40" y="658">◔  Dark theme</text>
+  </g>
+  <g transform="translate(286 36)">
+    <text x="0" y="43" class="serif fg" font-size="48" font-weight="520" letter-spacing="-1.5">Runs</text>
+    <text x="0" y="77" class="sans muted body">Submit approved work and inspect every durable attempt.</text>
+    <rect x="927" y="18" width="176" height="45" rx="5" fill="#69b5d1"/><text x="953" y="47" class="sans" fill="#0c1518" font-size="16" font-weight="700">＋  New run</text>
+    <line x1="0" y1="105" x2="1102" y2="105" class="line"/>
+
+    <rect x="0" y="130" width="1102" height="458" rx="6" class="card"/>
+    <text x="28" y="169" class="sans fg" font-size="19" font-weight="700">New run</text><text x="1074" y="169" text-anchor="end" class="sans muted body">×</text>
+    <line x1="0" y1="188" x2="1102" y2="188" class="line"/>
+
+    <text x="28" y="220" class="sans muted label">RUN WITH</text><text x="561" y="220" class="sans muted label">REPOSITORY</text>
+    <rect x="28" y="231" width="513" height="45" rx="4" class="field"/><text x="44" y="260" class="sans fg body">foreman</text><text x="516" y="260" text-anchor="end" class="sans muted body">⌄</text>
+    <rect x="561" y="231" width="513" height="45" rx="4" class="field"/><text x="577" y="260" class="mono fg body">my-project</text><text x="1049" y="260" text-anchor="end" class="sans muted body">⌄</text>
+
+    <text x="28" y="310" class="sans muted label">MODEL <tspan font-weight="400" letter-spacing="0">OPTIONAL</tspan></text><text x="561" y="310" class="sans muted label">EXECUTION</text>
+    <rect x="28" y="321" width="513" height="45" rx="4" class="field"/><text x="44" y="350" class="mono fg body">terra</text>
+    <rect x="561" y="321" width="513" height="45" rx="4" class="field"/><text x="577" y="350" class="sans fg body">Headless process</text><text x="1049" y="350" text-anchor="end" class="sans muted body">⌄</text>
+
+    <text x="28" y="400" class="sans muted label">PROMPT</text>
+    <rect x="28" y="411" width="1046" height="82" rx="4" class="field"/>
+    <text x="44" y="442" class="sans fg body">Implement issue 42, run the relevant tests, and leave the change ready</text><text x="44" y="467" class="sans fg body">for review.</text>
+    <text x="28" y="536" class="sans muted small">The agent continues unattended while its output and status are tracked here.</text>
+    <rect x="916" y="512" width="158" height="48" rx="5" fill="#69b5d1"/><text x="944" y="542" class="sans" fill="#0c1518" font-size="15" font-weight="700">Submit run  ▶</text>
+  </g>
+</svg>

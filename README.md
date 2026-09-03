@@ -224,7 +224,12 @@ which limits repeated context and cross-provider leakage.
 
 ## Quick start
 
-Build and initialize Machinist:
+Get your first dashboard-tracked run working in about five minutes. You need Go
+1.26.6 or newer and at least one supported agent CLI already installed and
+signed in. The generated example uses Codex; substitute another configured
+harness if preferred.
+
+### 1. Build and initialize
 
 ```sh
 git clone https://github.com/Bostonvex/machinist.git
@@ -233,36 +238,79 @@ mkdir -p ./bin && go build -o ./bin/machinist ./cmd/machinist
 ./bin/machinist init
 ```
 
-Configure an approved command:
+`init` creates the control-plane and worker configuration under
+`~/.machinist/`. The starter already includes the approved `foreman` command
+and Codex executor. Register the checkout you want agents to use by
+uncommenting and editing this block:
 
 ```toml
-# ~/.machinist/config.toml
-[commands.foreman]
-executor = "codex"
-prompt_file = "prompts/foreman.md" # optional
-timeout = "45m"
+# ~/.machinist/worker.toml
+[repositories.my-project]
+path = "/absolute/path/to/my-project"
 ```
 
-Run it directly:
+Machinist accepts only repository names and command names that you explicitly
+configure. Run validation now; it catches missing CLIs, bad paths, and invalid
+profiles before any work is submitted.
 
 ```sh
-./bin/machinist run --command=foreman --repo=/path/to/repo --prompt="Implement issue 42"
+./bin/machinist worker validate
 ```
 
-Or start the managed control plane and worker:
+### 2. Start Machinist
+
+Keep these two processes running in separate terminals:
 
 ```sh
 # Terminal 1: API, durable scheduler, and dashboard.
 ./bin/machinist start
 
-# Terminal 2: validates local executables, profiles, and repositories before polling.
-./bin/machinist worker validate
+# Terminal 2: local harnesses, credentials, and repository access.
 ./bin/machinist worker start
 ```
 
-Open `http://127.0.0.1:7331`, select **New run**, then choose either **Headless
-process** or **Interactive Herdr terminal**. The interactive option remains
-queued until the dedicated Herdr session is available.
+Open [http://127.0.0.1:7331](http://127.0.0.1:7331). The **Workers** page should
+show one online worker, the `my-project` repository, and its available model
+aliases.
+
+<p align="center">
+  <img src=".github/assets/screenshots/worker-profiles.svg" width="100%" alt="Machinist Workers page showing an online macOS worker, approved repositories, environment, and model profiles">
+</p>
+
+<p align="center"><sub>Example worker view. Host names, repositories, profiles, and health values reflect your own machine.</sub></p>
+
+### 3. Submit the first unattended run
+
+Go to **Runs**, select **New run**, and choose:
+
+1. **Run with:** `foreman`
+2. **Repository:** `my-project`
+3. **Model:** an advertised alias such as `terra`
+4. **Execution:** `Headless process`
+5. **Prompt:** a concrete task with acceptance criteria and required tests
+
+<p align="center">
+  <img src=".github/assets/screenshots/dashboard-new-run.svg" width="100%" alt="Machinist New run form configured for a headless foreman task in the my-project repository">
+</p>
+
+<p align="center"><sub>Submit a named workflow against an approved checkout; no remote shell command or machine-local path is accepted.</sub></p>
+
+Select **Submit run**. The run page updates with its lease, attempt, worker,
+streamed output, terminal state, duration, and reported token use. You can close
+the browser; the control plane and worker continue the task.
+
+Prefer a terminal-only smoke test? The direct runner does not need the server
+or worker:
+
+```sh
+./bin/machinist run \
+  --command=foreman \
+  --repo=/absolute/path/to/my-project \
+  --model=terra \
+  --prompt="Implement issue 42, run the relevant tests, and leave it ready for review."
+```
+
+### 4. Optional: make the run interactive in Herdr
 
 To enable the editable terminal workflow:
 
@@ -273,7 +321,12 @@ herdr --session machinist
 
 Inside Herdr, run **Machinist: New interactive workflow**. The plugin starts a
 session-bound `herdr` worker automatically and the new task appears in both the
-Herdr task board and Machinist dashboard.
+Herdr task board and Machinist dashboard. Choose **Interactive Herdr terminal**
+instead of **Headless process** when submitting from the dashboard. Interactive
+work remains queued until that dedicated Herdr session is available; it never
+silently falls back to headless execution. See the [illustrated Herdr
+walkthrough](#example-implement-an-issue-with-a-local-model-and-stay-available-to-steer)
+and [integration guide](docs/herdr.md) for model routing and lifecycle details.
 
 ## How execution works
 
@@ -394,12 +447,6 @@ machinist submit \
 
 For persistent services, use the supplied macOS LaunchAgent or Linux systemd
 deployment guides rather than keeping terminals open.
-
-<p align="center">
-  <img src=".github/assets/screenshots/worker-profiles.svg" width="900" alt="Machinist worker page showing the connected Mac mini, repositories, environment, and available Codex, Claude, and DGX profiles">
-</p>
-
-<p align="center"><sub>Scalable interface capture of a connected macOS worker advertising only its approved repositories and available profiles.</sub></p>
 
 ## Attempts, fallback, and rework
 
