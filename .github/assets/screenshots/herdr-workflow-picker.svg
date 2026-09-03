@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
+  <title id="title">Machinist workflow picker inside Herdr</title>
+  <desc id="desc">Illustrative vector view of the shipped Machinist plugin opening an interactive workflow picker in the dedicated Herdr session.</desc>
+  <style>
+    .ui{font-family:Arial,sans-serif}.mono{font-family:"Courier New",monospace}.fg{fill:#e7ecea}.muted{fill:#899391}.dim{fill:#626d6b}.cyan{fill:#68b7c9}.coral{fill:#ee907a}.green{fill:#7fc696}.yellow{fill:#e5c367}.line{stroke:#2b3337;stroke-width:1.4}.small{font-size:13px}.body{font-size:15px}.label{font-size:12px;letter-spacing:1.2px;text-transform:uppercase}
+  </style>
+  <rect width="1440" height="720" rx="10" fill="#090d10"/>
+  <rect x="1" y="1" width="1438" height="718" rx="9" fill="none" stroke="#30383d" stroke-width="2"/>
+  <rect x="1" y="1" width="1438" height="50" rx="9" fill="#11161b"/>
+  <line x1="1" y1="50" x2="1439" y2="50" class="line"/>
+  <circle cx="24" cy="25" r="6" fill="#e87982"/><circle cx="44" cy="25" r="6" fill="#e5c367"/><circle cx="64" cy="25" r="6" fill="#7fc696"/>
+  <text x="720" y="31" text-anchor="middle" class="mono muted body">herdr · session: machinist · Bostonvex/machinist</text>
+  <circle cx="1360" cy="25" r="4" fill="#7fc696"/><text x="1372" y="30" class="mono green small">mac-mini</text>
+
+  <rect x="1" y="51" width="224" height="668" fill="#11161b"/><line x1="225" y1="51" x2="225" y2="719" class="line"/>
+  <text x="22" y="84" class="ui fg" font-size="18" font-weight="700" letter-spacing="1.6">HERDR</text>
+  <text x="22" y="128" class="mono dim label">Spaces</text>
+  <rect x="12" y="145" width="200" height="59" rx="7" fill="#1a2025"/>
+  <circle cx="25" cy="166" r="4" fill="#e5c367"/><text x="41" y="172" class="mono fg body">machinist</text>
+  <text x="41" y="190" class="mono muted small">interactive factory</text>
+  <circle cx="25" cy="229" r="4" fill="none" stroke="#697477"/><text x="41" y="234" class="mono muted body">default</text>
+  <text x="41" y="252" class="mono dim small">unrelated session</text>
+  <text x="22" y="304" class="mono dim label">Workers</text>
+  <circle cx="25" cy="332" r="4" fill="#7fc696"/><text x="41" y="337" class="mono fg body">mac-mini</text>
+  <text x="41" y="357" class="mono muted small">herdr · connected</text>
+  <circle cx="25" cy="388" r="4" fill="#7fc696"/><text x="41" y="393" class="mono fg body">mac-mini</text>
+  <text x="41" y="413" class="mono muted small">process · connected</text>
+
+  <rect x="226" y="51" width="1213" height="45" fill="#10151a"/><line x1="226" y1="96" x2="1439" y2="96" class="line"/>
+  <text x="248" y="79" class="mono fg body" font-weight="700">workflow picker</text>
+  <rect x="246" y="93" width="126" height="3" fill="#ee907a"/>
+  <text x="407" y="79" class="mono dim body">task board</text><text x="514" y="79" class="mono dim body">shell</text>
+
+  <text x="252" y="132" class="mono cyan body">mac-mini:machinist %</text><text x="430" y="132" class="mono fg body">Machinist: New interactive workflow</text>
+  <rect x="352" y="160" width="960" height="484" rx="10" fill="#11171c" stroke="#343d42" stroke-width="1.6"/>
+  <text x="384" y="201" class="ui fg" font-size="24" font-weight="650">Machinist × Herdr</text>
+  <text x="384" y="227" class="mono muted small">New interactive workflow · the agent opens in an editable Herdr workspace.</text>
+  <line x1="384" y1="250" x2="1280" y2="250" class="line"/>
+
+  <text x="384" y="285" class="mono dim label">Command</text>
+  <text x="398" y="320" class="mono coral body">1.</text><text x="427" y="320" class="mono fg body">implement</text><text x="570" y="320" class="mono muted small">route: implementation</text>
+  <text x="398" y="350" class="mono muted body">2.</text><text x="427" y="350" class="mono muted body">local-audit</text>
+  <text x="398" y="380" class="mono muted body">3.</text><text x="427" y="380" class="mono muted body">local-check</text>
+  <rect x="790" y="276" width="462" height="116" rx="6" fill="#0b1014" stroke="#293238"/>
+  <text x="812" y="302" class="mono dim label">Example route policy</text>
+  <circle cx="816" cy="328" r="4" fill="#7fc696"/><text x="830" y="333" class="mono fg body">dgx-codex</text><text x="1030" y="333" class="mono muted small">ds-0731 · local</text>
+  <circle cx="816" cy="357" r="4" fill="#e5c367"/><text x="830" y="362" class="mono fg body">codex-subscription</text><text x="1030" y="362" class="mono muted small">fallback</text>
+
+  <text x="384" y="426" class="mono cyan body">Command [implement]:</text><text x="581" y="426" class="mono fg body">1</text>
+  <text x="384" y="456" class="mono cyan body">Repository [machinist]:</text><text x="607" y="456" class="mono fg body">machinist</text>
+  <text x="384" y="486" class="mono cyan body">Model/alias:</text><text x="514" y="486" class="mono fg body">local</text>
+  <text x="384" y="521" class="mono muted small">Paste the task. Finish with a line containing only a single period (.).</text>
+  <rect x="384" y="540" width="868" height="66" rx="5" fill="#090e12" stroke="#2e383d"/>
+  <text x="400" y="565" class="mono fg body">Implement issue 42, run the relevant tests, and leave the</text>
+  <text x="400" y="588" class="mono fg body">change ready for review.</text><text x="400" y="610" class="mono coral body">.</text>
+
+  <rect x="226" y="684" width="1213" height="35" fill="#10151a"/><line x1="226" y1="684" x2="1439" y2="684" class="line"/>
+  <text x="246" y="707" class="mono dim small">session machinist · plugin bostonvex.machinist</text>
+  <text x="1415" y="707" text-anchor="end" class="mono green small">control plane connected · DGX healthy</text>
+</svg>

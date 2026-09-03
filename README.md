@@ -140,6 +140,32 @@ terminal, answer a question, approve work, edit commands, or continue the agent
 conversation. Machinist retains the job, route, attempts, budgets, and exact
 session/workspace/pane/agent binding; it does not record raw keystrokes.
 
+#### Example: implement an issue with a local model and stay available to steer
+
+Suppose `implement` uses the ordered route `dgx-codex → codex-subscription`.
+Open the plugin action, choose the approved `machinist` repository, select the
+`local` model alias, and paste the acceptance-focused task. The picker submits
+one canonical job with `execution_mode=herdr`; it does not start an untracked
+shell command.
+
+<p align="center">
+  <img src=".github/assets/screenshots/herdr-workflow-picker.svg" width="100%" alt="Illustrative Herdr workflow picker selecting the implement command, Machinist repository, and local model alias">
+</p>
+
+<p align="center"><sub>Illustrative vector walkthrough of the shipped terminal picker. Exact Herdr chrome may vary by version.</sub></p>
+
+Machinist leases the attempt to the session-bound worker, creates the workspace
+at the registered repository, starts the configured Codex adapter, and records
+the terminal binding. If the agent asks whether to apply a migration, you answer
+in the same pane while the worker keeps the lease alive. The adjacent task board
+and web dashboard continue to show the same job and attempt.
+
+<p align="center">
+  <img src=".github/assets/screenshots/herdr-interactive-run.svg" width="100%" alt="Illustrative editable Codex pane beside the synchronized Machinist task board and terminal binding">
+</p>
+
+<p align="center"><sub>One editable agent pane, one durable Machinist run. State and binding metadata synchronize; raw terminal input does not.</sub></p>
+
 ```mermaid
 sequenceDiagram
     participant U as Operator in Herdr

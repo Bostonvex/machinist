@@ -78,6 +78,28 @@ Jobs submitted from the Machinist dashboard with **Interactive Herdr terminal**
 selected use the same queue. They wait safely until this session-bound worker
 is online.
 
+## Example walkthrough
+
+This example dispatches the `implement` command for the registered `machinist`
+repository. The `local` alias resolves on the worker to the DGX-backed model;
+the control plane never receives the model endpoint or subscription credentials.
+
+<p align="center">
+  <img src="../../.github/assets/screenshots/herdr-workflow-picker.svg" width="100%" alt="Illustrative Machinist workflow picker running inside Herdr">
+</p>
+
+After dispatch, Herdr owns the editable terminal and Machinist owns the durable
+job. An operator can answer a blocking question in the pane while the task board
+shows the attempt's exact session, workspace, pane, and agent IDs.
+
+<p align="center">
+  <img src="../../.github/assets/screenshots/herdr-interactive-run.svg" width="100%" alt="Illustrative editable agent pane synchronized with the Machinist task board">
+</p>
+
+These are scalable vector walkthroughs of the implemented interaction model,
+not captured production data. Repository names, IDs, timings, and prompts are
+examples.
+
 ## How a run is connected
 
 ```mermaid
