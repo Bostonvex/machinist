@@ -909,7 +909,7 @@ func TestStorePersistsCurrentWorkerRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(repositories, []string{"machinist", "other"}) {
+	if !slices.Equal(repositories, []string{"machinist"}) {
 		t.Fatalf("known repositories = %#v", repositories)
 	}
 }
@@ -951,7 +951,7 @@ func TestStorePrunesSupersededWorkerAndPreservesRunWorkerName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(repositories, []string{"machinist", "retired"}) {
+	if !slices.Equal(repositories, []string{"machinist"}) {
 		t.Fatalf("known repositories = %#v", repositories)
 	}
 }

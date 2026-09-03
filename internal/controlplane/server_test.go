@@ -346,6 +346,43 @@ func TestServerQueuesKnownRepositoryWithUnrelatedLiveWorker(t *testing.T) {
 	}
 }
 
+func TestServerStopsAdvertisingExplicitlyRemovedRepository(t *testing.T) {
+	_, webServer := newTestHTTPServer(t)
+	defer webServer.Close()
+
+	auth := map[string]string{"Authorization": "Bearer secret"}
+	for _, repositories := range [][]string{{"machinist", "disposable"}, {"machinist"}} {
+		response := postJSON(t, webServer.URL+"/api/v1/workers/poll", map[string]any{
+			"instance_id": "worker-a", "name": "test-worker", "executors": []string{"test"}, "repositories": repositories,
+		}, auth)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("worker poll status = %d", response.StatusCode)
+		}
+		response.Body.Close()
+	}
+
+	response, err := http.Get(webServer.URL + "/api/v1/catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var catalog catalogResponse
+	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 1 || catalog.Repositories[0] != "machinist" {
+		t.Fatalf("catalog repositories = %#v", catalog.Repositories)
+	}
+
+	rejected := postJSON(t, webServer.URL+"/api/v1/jobs", map[string]string{
+		"prompt": "must not queue", "repository": "disposable", "command": "plan",
+	}, auth)
+	defer rejected.Body.Close()
+	if rejected.StatusCode != http.StatusBadRequest {
+		t.Fatalf("removed repository submission status = %d", rejected.StatusCode)
+	}
+}
+
 func TestServerServesEmbeddedReactAppAndRejectsRemoteListen(t *testing.T) {
 	_, webServer := newTestHTTPServer(t)
 	defer webServer.Close()

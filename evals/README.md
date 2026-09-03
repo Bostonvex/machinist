@@ -39,7 +39,9 @@ SSH host verification, and loopback-only control-plane and collector forwards.
 
 `evals.cutover_metrics` compares paired Buzz and Machinist measurements and
 turns the speed, token, repair, quality, and unattended-operation targets into
-CI-friendly gates. See [the benchmark contract](../benchmarks/README.md).
+CI-friendly gates. `evals.pilot_evidence` creates provenance-bearing records
+from explicitly correlated Buzz turns and terminal Machinist jobs without
+assuming missing usage is zero. See [the benchmark contract](../benchmarks/README.md).
 
 ## Shepherd queue smoke test
 

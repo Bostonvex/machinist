@@ -1,6 +1,7 @@
 # Adaptive agent platform plan
 
-Status: release candidate implemented; measured pilot and production cutover pending
+Status: release candidate implemented; measured pilot started (1/10 minimum
+pairs); production cutover pending
 
 This plan evolves Machinist into the default orchestration layer for unattended
 agentic coding while preserving the useful controls from Buzz Workspace and the
@@ -52,6 +53,11 @@ telemetry-based capacity routing. These remain ASF/repository workflow
 responsibilities or pilot gates. The fail-closed paired-task evaluator and
 synthetic format example are in [the cutover benchmark](../benchmarks/README.md).
 See also [the source-verified comparison](buzz-asf-comparison.md).
+
+The first offline paired shadow is documented in
+[the 2026-09-02 pilot report](../benchmarks/pilot-2026-09-02.md). It met the
+single-task speed, token, quality, and unattended thresholds, but the evaluator
+correctly refuses cutover with only one of the ten minimum paired tasks.
 
 ## Side-by-side capability matrix
 

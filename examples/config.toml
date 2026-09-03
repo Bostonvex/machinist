@@ -33,6 +33,14 @@ executor = "codex"
 prompt_file = "prompts/audit.md"
 timeout = "60m"
 
+# Offline cutover replay. Register only a disposable checkout and use a
+# worker-local profile with no external mutation authority.
+# [commands.shadow-replay]
+# profile = "dgx-local"
+# role = "pilot"
+# prompt_file = "prompts/shadow-replay.md"
+# timeout = "45m"
+
 [commands.shepherd]
 executor = "codex"
 prompt_file = "prompts/shepherd.md"

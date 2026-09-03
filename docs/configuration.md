@@ -24,6 +24,12 @@ command = ["./scripts/custom-workflow.sh"]
 path = "/absolute/path/to/my-project"
 ```
 
+The control-plane admission catalog is the union of current worker repository
+registrations. The latest disconnected worker remains registered so work can be
+queued while it is offline. To retire a repository, remove it from every worker
+that declares it; after those workers poll again (and superseded instances age
+out), new submissions are rejected while historical jobs remain visible.
+
 Managed triggers select one command with `command = "audit"`. Model selection remains
 available when the executor command includes `{{machinist.model}}`.
 

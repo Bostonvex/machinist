@@ -1024,6 +1024,9 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 			return nil, fmt.Errorf("store worker repository: %w", err)
 		}
 	}
+	if err := reconcileKnownRepositories(ctx, tx); err != nil {
+		return nil, err
+	}
 	active, err := scanRunSpec(tx.QueryRowContext(ctx, `SELECT id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,lease_token,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,max_total_tokens,fallback_on,current_attempt_id,attempt_count,last_error_class FROM runs WHERE worker_instance=? AND state='running' LIMIT 1`, request.InstanceID))
 	if err == nil {
 		if err := tx.Commit(); err != nil {
@@ -1545,7 +1548,12 @@ func finalizeExpiredCancellations(ctx context.Context, tx *sql.Tx, now time.Time
 }
 
 func (s *Store) PruneSupersededWorkers(ctx context.Context, seenAfter time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM workers AS old
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM workers AS old
 WHERE julianday(old.last_seen_at) < julianday(?)
   AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.worker_instance=old.instance_id AND r.state='running')
   AND EXISTS (
@@ -1557,7 +1565,36 @@ WHERE julianday(old.last_seen_at) < julianday(?)
 	if err != nil {
 		return 0, fmt.Errorf("prune superseded workers: %w", err)
 	}
-	return result.RowsAffected()
+	if err := reconcileKnownRepositories(ctx, tx); err != nil {
+		return 0, err
+	}
+	pruned, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return pruned, nil
+}
+
+type contextExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// reconcileKnownRepositories makes the admission catalog the union of current
+// worker registrations. The latest disconnected worker remains registered, so
+// work can still be queued while it is offline. A repository explicitly removed
+// by a worker configuration disappears once no retained worker declares it.
+func reconcileKnownRepositories(ctx context.Context, executor contextExecutor) error {
+	if _, err := executor.ExecContext(ctx, `DELETE FROM known_repositories
+WHERE NOT EXISTS (
+  SELECT 1 FROM worker_repositories wr
+  WHERE wr.repository=known_repositories.repository
+)`); err != nil {
+		return fmt.Errorf("reconcile known repositories: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {

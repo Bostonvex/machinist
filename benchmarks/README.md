@@ -1,9 +1,13 @@
 # Buzz-to-Machinist cutover benchmark
 
 This benchmark turns the migration acceptance criteria into a reproducible,
-fail-closed decision. It does not contain production results. Collect the same
-representative task once through Buzz/ASF and once through Machinist, then store
-one JSON object per line:
+fail-closed decision. The synthetic fixture does not contain production results.
+Collect the same representative task once through Buzz/ASF and once through
+Machinist, then store one JSON object per line:
+
+The first measured offline shadow is recorded separately in
+[the 2026-09-02 pilot report](pilot-2026-09-02.md); it is one pair and therefore
+does not satisfy the cutover gate.
 
 ```json
 {"task_id":"change-001","system":"buzz","accepted":true,"elapsed_seconds":1800,"token_usage":52000,"repair_attempts":2,"operator_touches":3,"unattended":false}
@@ -24,6 +28,52 @@ Run the evaluator with:
 python3 -m evals.cutover_metrics benchmarks/cutover.synthetic.jsonl
 python3 -m evals.cutover_metrics measurements.jsonl --format=json
 ```
+
+Capture evidence with `evals.pilot_evidence`. The capture path deliberately
+requires a human-supplied acceptance decision, semantic repair count, operator
+touch count, and attended/unattended classification. A successful process is not
+automatically an accepted change.
+
+First export a task-unbound Buzz inventory. This is useful for correlating
+`FACTORY:RUN` and GitHub timestamps to exact telemetry turn IDs, but inventory
+rows are explicitly marked ineligible for pairing:
+
+```sh
+python3 -m evals.pilot_evidence buzz-inventory \
+  --database ~/.local/share/buzz-agent-observability/telemetry.sqlite3 \
+  --since 2026-09-01T00:00:00Z \
+  --output ~/.machinist/pilot/buzz-turns.jsonl
+```
+
+After verifying which turns belong to one task, bind all of them to the Buzz
+record. `elapsed-seconds` is admission through accepted handoff, not merely the
+sum of active turn durations:
+
+```sh
+python3 -m evals.pilot_evidence record-buzz \
+  --database ~/.local/share/buzz-agent-observability/telemetry.sqlite3 \
+  --turn-id TURN_1 --turn-id TURN_2 \
+  --task-id change-001 --elapsed-seconds 1800 \
+  --accepted --repair-attempts 2 --operator-touches 3 --attended \
+  --output ~/.machinist/pilot/measurements.jsonl
+```
+
+For Machinist, capture a terminal job by ID. Usage is summed across every
+attempt; one attempt without structured usage makes the task's usage `null`.
+
+```sh
+python3 -m evals.pilot_evidence record-machinist \
+  --endpoint http://127.0.0.1:7331 --job-id JOB_ID \
+  --task-id change-001 --accepted --repair-attempts 0 \
+  --operator-touches 0 --unattended \
+  --output ~/.machinist/pilot/measurements.jsonl
+```
+
+Capture files are written atomically with mode `0600`. A duplicate
+`task_id`/`system` pair is rejected unless `--replace` is explicit. Evidence
+metadata includes IDs, profiles, providers, workers, and timestamps, but never
+copies a prompt or result. Buzz `context_occupancy` updates are preserved as a
+diagnostic and are never misreported as aggregate token usage.
 
 The first command demonstrates the format with synthetic data. It is not
 migration evidence. The evaluator exits 0 only when all gates pass, 2 when valid
