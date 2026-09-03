@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 620" role="img" aria-labelledby="title desc">
+  <title id="title">Machinist worker profiles</title>
+  <desc id="desc">Vector capture of a connected Mac mini worker with approved repositories, environment facts, and available subscription and DGX profiles.</desc>
+  <style>
+    .sans{font-family:sans-serif}.serif{font-family:serif}.mono{font-family:monospace}.fg{fill:#edf1ef}.muted{fill:#96a09d}.green{fill:#83c795}.line{stroke:#303536;stroke-width:1.5}.body{font-size:17px}.small{font-size:14px}.nav{font-size:16px}.pill{font-size:14px;font-weight:600}.repo{font-size:14px}
+  </style>
+  <rect width="1440" height="620" fill="#151819"/><rect width="236" height="620" fill="#111415"/>
+  <path d="M28 58V35c0-10 6-16 15-16s15 6 15 16v11h6V35c0-10 6-16 15-16s15 6 15 16v23" fill="none" stroke="#69b5d1" stroke-width="5" stroke-linecap="round"/>
+  <text x="108" y="48" class="serif fg" font-size="27" font-weight="600">machinist</text>
+  <g class="sans nav muted"><text x="40" y="126">⌁  Runs</text><text x="205" y="126">5</text><text x="40" y="176">▥  Analytics</text><text x="40" y="226">◎  Agents &amp; infra</text>
+    <rect x="0" y="245" width="236" height="48" fill="#1b2021"/><rect x="14" y="257" width="3" height="24" fill="#69b5d1"/><text x="40" y="276" class="fg">▤  Workers</text>
+    <text x="40" y="326">◷  Triggers</text><text x="205" y="326">0</text><text x="40" y="376">▣  Commands</text><line x1="22" y1="526" x2="214" y2="526" class="line"/><text x="40" y="562">▤  1 worker online</text><text x="40" y="598">◔  Dark theme</text></g>
+  <g transform="translate(286 44)">
+    <text x="0" y="42" class="serif fg" font-size="48" font-weight="520" letter-spacing="-1.5">Workers</text>
+    <text x="0" y="78" class="sans muted body">The machines available to pick up and execute work.</text><line x1="0" y1="112" x2="1102" y2="112" class="line"/>
+    <rect x="0" y="142" width="1102" height="222" rx="4" fill="#191d1e" stroke="#303536" stroke-width="1.5"/>
+    <g class="sans"><text x="30" y="196" class="fg" font-size="20" font-weight="650">▤  mac-mini</text><text x="30" y="226" class="mono muted small">worker_40b51c20…</text><text x="30" y="254" class="mono muted small">darwin/arm64 · native · zsh</text>
+      <rect x="466" y="168" width="210" height="32" rx="16" fill="#202526" stroke="#394041"/><text x="483" y="190" class="mono fg repo">Agent-Software-Factory</text><rect x="689" y="168" width="108" height="32" rx="16" fill="#202526" stroke="#394041"/><text x="707" y="190" class="mono fg repo">Machinist</text>
+      <rect x="466" y="215" width="190" height="32" rx="16" fill="#1d2922" stroke="#33533d"/><text x="483" y="237" class="mono green pill">Claude-Subscription</text><rect x="668" y="215" width="184" height="32" rx="16" fill="#1d2922" stroke="#33533d"/><text x="685" y="237" class="mono green pill">Codex-Subscription</text>
+      <rect x="466" y="260" width="118" height="32" rx="16" fill="#1d2922" stroke="#33533d"/><text x="483" y="282" class="mono green pill">Dgx-Codex</text><rect x="596" y="260" width="218" height="32" rx="16" fill="#1d2922" stroke="#33533d"/><text x="613" y="282" class="mono green pill">Dgx-Codex-Readonly</text>
+      <text x="466" y="325" class="sans muted body">dgx-client · mac-mini · trusted</text>
+      <rect x="940" y="188" width="132" height="36" rx="18" fill="#1d2922" stroke="#33533d"/><circle cx="960" cy="206" r="5" fill="#83c795"/><text x="974" y="212" class="sans green" font-size="15" font-weight="650">Connected</text><text x="946" y="252" class="sans muted small">Last seen just now</text>
+    </g>
+    <g transform="translate(0 406)"><rect width="1102" height="116" rx="4" fill="#131718" stroke="#272c2d"/><text x="28" y="42" class="sans fg" font-size="17" font-weight="650">Admission snapshot</text><text x="28" y="72" class="sans muted body">Only these repositories and currently available profiles can receive managed work.</text><text x="28" y="98" class="sans muted small">OS, architecture, execution mode, shell, feature set, and trusted tags are advertised separately from credentials.</text></g>
+  </g>
+</svg>
