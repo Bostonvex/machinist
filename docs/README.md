@@ -7,6 +7,7 @@
 - [Private multi-host fleet deployment](fleet-deployment.md)
 - [Windows deployment](windows-deployment.md)
 - [Observability bridge](observability.md)
+- [Herdr interactive integration](herdr.md)
 - [Adaptive agent platform plan](adaptive-agent-platform.md)
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
 - [Cutover benchmark](../benchmarks/README.md)

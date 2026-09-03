@@ -64,6 +64,8 @@ checksums. The script:
 - installs separate control-plane, worker, and DGX-tunnel LaunchAgents;
 - backs up a changed plist before replacing it;
 - starts the worker only when `machinist worker validate` succeeds;
+- links the bundled Herdr plugin when Herdr is installed and the plugin source
+  is present beside the installer;
 - installs the bounded second-node NVIDIA adapter under
   `~/.local/libexec/machinist`.
 
@@ -113,6 +115,8 @@ auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
 base_url_env = "DGX_SPARK_BASE_URL"
 command = ["codex", "exec", "--ephemeral", "--json", "--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
+herdr_agent = "codex"
+herdr_args = ["--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { local = "ds-0731" }
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
@@ -125,6 +129,8 @@ auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
 base_url_env = "DGX_SPARK_BASE_URL"
 command = ["codex", "exec", "--ephemeral", "--json", "--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "read-only", "-"]
+herdr_agent = "codex"
+herdr_args = ["--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "read-only"]
 models = { local = "ds-0731" }
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
@@ -135,6 +141,8 @@ harness = "codex"
 provider = "openai"
 auth_mode = "subscription"
 command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
+herdr_agent = "codex"
+herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
 ```
 
@@ -221,6 +229,8 @@ launchctl print gui/$(id -u)/sh.machinist.control-plane
 launchctl print gui/$(id -u)/sh.machinist.worker
 curl -fsS http://127.0.0.1:7331/api/v1/status
 curl -fsS http://127.0.0.1:7331/api/v1/observability
+herdr plugin action list --plugin bostonvex.machinist
+herdr --session machinist
 ```
 
 Open `http://127.0.0.1:7331`, submit a narrow canary, and verify the selected

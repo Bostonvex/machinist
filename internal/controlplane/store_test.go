@@ -18,6 +18,49 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
+func TestHerdrJobsOnlyDispatchToHerdrWorkersAndExposeTerminalBinding(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "machinist.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	command := config.ResolvedCommand{Name: "implement", Executor: "codex", Prompt: "work", Timeout: time.Minute, Hash: "hash"}
+	jobID, err := store.CreateJobWithOptions(t.Context(), "work", "machinist", "implement", command, CreateJobOptions{ExecutionMode: "herdr", Origin: "herdr-plugin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := protocol.PollRequest{InstanceID: "process-worker", Name: "mac-mini", Executors: []string{"codex"}, Repositories: []string{"machinist"}, Transports: []string{"process"}}
+	if run, err := store.Poll(t.Context(), base); err != nil || run != nil {
+		t.Fatalf("process poll run=%#v err=%v", run, err)
+	}
+	herdrPoll := base
+	herdrPoll.InstanceID = "herdr-worker"
+	herdrPoll.Transports = []string{"herdr"}
+	run, err := store.Poll(t.Context(), herdrPoll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.ExecutionMode != "herdr" || run.Origin != "herdr-plugin" || run.JobID != jobID {
+		t.Fatalf("run = %#v", run)
+	}
+	binding := protocol.TerminalBinding{Session: "machinist", WorkspaceID: "w1", TabID: "w1:t1", PaneID: "w1:p1", AgentName: "machinist_attempt"}
+	stale := protocol.BindTerminalRequest{InstanceID: herdrPoll.InstanceID, LeaseToken: "stale-lease", AttemptID: run.AttemptID, Terminal: binding}
+	if err := store.BindTerminal(t.Context(), run.ID, stale); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("stale terminal binding error = %v", err)
+	}
+	if err := store.BindTerminal(t.Context(), run.ID, protocol.BindTerminalRequest{InstanceID: herdrPoll.InstanceID, LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, Terminal: binding}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.Jobs[0]
+	if stored.ExecutionMode != "herdr" || stored.Origin != "herdr-plugin" || len(stored.Runs) != 1 || len(stored.Runs[0].Attempts) != 1 || stored.Runs[0].Attempts[0].Terminal == nil || *stored.Runs[0].Attempts[0].Terminal != binding {
+		t.Fatalf("stored = %#v", stored)
+	}
+}
+
 func TestStoreRejectsContradictoryOutcomes(t *testing.T) {
 	for _, test := range []struct {
 		state    string
@@ -73,7 +116,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 7 {
+	if count != 0 || version != 8 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -84,7 +127,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=8;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=9;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -134,7 +177,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 8 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -184,7 +227,7 @@ func TestOpenStoreUpgradesVersionFourWithoutLosingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
+	if version != 8 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
 		t.Fatalf("version=%d columns=%d cancel=%d jobs=%#v", version, cancellationColumns, cancelRequested, snapshot.Jobs)
 	}
 }
@@ -221,7 +264,7 @@ func TestOpenStoreUpgradesVersionFiveLegacyAttemptBudget(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_attempts FROM runs WHERE job_id=?`, jobID).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 || maxAttempts != defaultLegacyMaxAttempts {
+	if version != 8 || maxAttempts != defaultLegacyMaxAttempts {
 		t.Fatalf("version=%d max_attempts=%d", version, maxAttempts)
 	}
 }
@@ -268,7 +311,7 @@ func TestOpenStoreUpgradesVersionSixTokenBudgetWithoutLosingJobs(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_total_tokens FROM runs WHERE job_id=?`, jobID).Scan(&maxTotalTokens); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 || budgetColumns != 1 || maxTotalTokens != 0 {
+	if version != 8 || budgetColumns != 1 || maxTotalTokens != 0 {
 		t.Fatalf("version=%d columns=%d max_total_tokens=%d", version, budgetColumns, maxTotalTokens)
 	}
 }
@@ -1700,8 +1743,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 7 {
-		t.Fatalf("schema version = %d, %v, want 7", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
+		t.Fatalf("schema version = %d, %v, want 8", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {

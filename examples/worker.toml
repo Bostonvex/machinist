@@ -25,10 +25,14 @@ token_file = "~/.machinist/server/worker.token"
 [executors.codex]
 command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
 models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
+herdr_agent = "codex"
+herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 
 [executors.claude]
 command = ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model={{machinist.model}}", "--dangerously-skip-permissions"]
 models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
+herdr_agent = "claude"
+herdr_args = ["--model={{machinist.model}}", "--dangerously-skip-permissions"]
 
 # Typed profiles can be used instead of legacy executors. These examples are
 # commented so a fresh install does not require every harness or credential.
@@ -38,6 +42,8 @@ models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 # auth_mode = "subscription"
 # command = ["codex", "exec", "--json", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
 # models = { luna = "gpt-5.6-luna", terra = "gpt-5.6-terra", sol = "gpt-5.6-sol" }
+# herdr_agent = "codex"
+# herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 #
 # [profiles.deepseek]
 # harness = "opencode"
@@ -46,6 +52,8 @@ models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 # secret_env = "DEEPSEEK_API_KEY"
 # command = ["opencode", "run", "--model={{machinist.model}}"]
 # models = { reasoner = "deepseek/deepseek-reasoner", chat = "deepseek/deepseek-chat" }
+# herdr_agent = "opencode"
+# herdr_args = ["--model={{machinist.model}}"]
 #
 # [profiles.dgx-local]
 # harness = "opencode"
@@ -55,6 +63,8 @@ models = { haiku = "haiku", sonnet = "sonnet", opus = "opus" }
 # base_url_env = "OPENAI_BASE_URL"
 # command = ["opencode", "run", "--model={{machinist.model}}"]
 # models = { coder = "openai/local-coder" }
+# herdr_agent = "opencode"
+# herdr_args = ["--model={{machinist.model}}"]
 # requires_tags = ["dgx-spark"]
 
 # Register each repository that managed workers may run in.

@@ -71,6 +71,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newSubmitCommand(options))
 	root.AddCommand(newStartCommand(options))
 	root.AddCommand(newUpdateCommand(options))
+	root.AddCommand(newHerdrCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options))
@@ -140,10 +141,12 @@ type submitCatalog struct {
 }
 
 type submitJobRequest struct {
-	Prompt     string `json:"prompt"`
-	Repository string `json:"repository"`
-	Command    string `json:"command"`
-	Model      string `json:"model,omitempty"`
+	Prompt        string `json:"prompt"`
+	Repository    string `json:"repository"`
+	Command       string `json:"command"`
+	Model         string `json:"model,omitempty"`
+	ExecutionMode string `json:"execution_mode,omitempty"`
+	Origin        string `json:"origin,omitempty"`
 }
 
 type submitJobResponse struct {
@@ -151,19 +154,20 @@ type submitJobResponse struct {
 }
 
 func newSubmitCommand(options *commandOptions) *cobra.Command {
-	var commandName, prompt, model, repository string
+	var commandName, prompt, model, repository, mode string
 	submit := &cobra.Command{
 		Use:   "submit",
 		Short: "Queue work for a managed Machinist Worker",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return submitSelection(command.Context(), options, commandName, prompt, model, repository)
+			return submitSelectionWithMode(command.Context(), options, commandName, prompt, model, repository, mode, "machinist-cli")
 		},
 	}
 	submit.Flags().StringVar(&commandName, "command", "", "command name from the control plane")
 	submit.Flags().StringVar(&prompt, "prompt", "", "work request supplied to the command on standard input (required)")
 	submit.Flags().StringVar(&model, "model", "", "executor model or configured alias for this task")
 	submit.Flags().StringVar(&repository, "repo", "", "configured repository name (required)")
+	submit.Flags().StringVar(&mode, "mode", "process", "execution mode: process or herdr")
 	_ = submit.MarkFlagRequired("command")
 	_ = submit.MarkFlagRequired("prompt")
 	_ = submit.MarkFlagRequired("repo")
@@ -171,6 +175,10 @@ func newSubmitCommand(options *commandOptions) *cobra.Command {
 }
 
 func submitSelection(ctx context.Context, options *commandOptions, commandName, prompt, model, repository string) error {
+	return submitSelectionWithMode(ctx, options, commandName, prompt, model, repository, "process", "machinist-cli")
+}
+
+func submitSelectionWithMode(ctx context.Context, options *commandOptions, commandName, prompt, model, repository, mode, origin string) error {
 	worker, err := config.LoadWorker(options.configPath)
 	if err != nil {
 		return err
@@ -190,7 +198,7 @@ func submitSelection(ctx context.Context, options *commandOptions, commandName, 
 		return fmt.Errorf("command %q is not defined in the control plane", commandName)
 	}
 	var result submitJobResponse
-	request := submitJobRequest{Prompt: prompt, Repository: repository, Command: commandName, Model: model}
+	request := submitJobRequest{Prompt: prompt, Repository: repository, Command: commandName, Model: model, ExecutionMode: mode, Origin: origin}
 	if err := client.Post(ctx, "/api/v1/jobs", request, &result); err != nil {
 		return fmt.Errorf("submit job: %w", err)
 	}
@@ -238,7 +246,8 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 }
 
 func newWorkerStartCommand(options *commandOptions) *cobra.Command {
-	return &cobra.Command{
+	var transport string
+	command := &cobra.Command{
 		Use:   "start",
 		Short: "Start a managed Machinist Worker",
 		Args:  cobra.NoArgs,
@@ -247,7 +256,7 @@ func newWorkerStartCommand(options *commandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			worker, err := managedworker.New(workerConfig, options.stdout, options.stderr)
+			worker, err := managedworker.NewForTransport(workerConfig, options.stdout, options.stderr, transport)
 			if err != nil {
 				return err
 			}
@@ -255,6 +264,8 @@ func newWorkerStartCommand(options *commandOptions) *cobra.Command {
 			return worker.Run(command.Context())
 		},
 	}
+	command.Flags().StringVar(&transport, "transport", "process", "execution transport: process or herdr")
+	return command
 }
 
 func newRunCommand(options *commandOptions) *cobra.Command {

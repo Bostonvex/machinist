@@ -90,10 +90,12 @@ type statusResponse struct {
 }
 
 type submitRequest struct {
-	Prompt     string `json:"prompt"`
-	Repository string `json:"repository"`
-	Command    string `json:"command"`
-	Model      string `json:"model"`
+	Prompt        string `json:"prompt"`
+	Repository    string `json:"repository"`
+	Command       string `json:"command"`
+	Model         string `json:"model"`
+	ExecutionMode string `json:"execution_mode"`
+	Origin        string `json:"origin"`
 }
 
 type commandDefinitionResponse struct {
@@ -310,6 +312,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
+	mux.HandleFunc("POST /api/v1/runs/{id}/terminal", s.authorizeWorker(s.bindTerminal))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 	return securityHeaders(mux), nil
@@ -557,12 +560,70 @@ func (s *Server) submit(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	command.Model = input.Model
-	jobID, err := s.store.CreateJob(request.Context(), input.Prompt, input.Repository, input.Command, command)
+	input.ExecutionMode = strings.ToLower(strings.TrimSpace(input.ExecutionMode))
+	if input.ExecutionMode == "" {
+		input.ExecutionMode = "process"
+	}
+	if input.ExecutionMode != "process" && input.ExecutionMode != "herdr" {
+		writeError(response, http.StatusBadRequest, errors.New("execution_mode must be process or herdr"))
+		return
+	}
+	input.Origin = strings.ToLower(strings.TrimSpace(input.Origin))
+	if input.Origin == "" {
+		input.Origin = "machinist"
+	}
+	if len(input.Origin) > 64 || !validOrigin(input.Origin) {
+		writeError(response, http.StatusBadRequest, errors.New("origin is invalid"))
+		return
+	}
+	jobID, err := s.store.CreateJobWithOptions(request.Context(), input.Prompt, input.Repository, input.Command, command, CreateJobOptions{ExecutionMode: input.ExecutionMode, Origin: input.Origin})
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, map[string]string{"id": jobID})
+}
+
+func validOrigin(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Server) bindTerminal(response http.ResponseWriter, request *http.Request) {
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
+	var input protocol.BindTerminalRequest
+	if err := decodeJSON(request, &input); err != nil {
+		writeDecodeError(response, err)
+		return
+	}
+	if input.InstanceID == "" || input.LeaseToken == "" || input.AttemptID == "" {
+		writeError(response, http.StatusBadRequest, errors.New("instance_id, lease_token, and attempt_id are required"))
+		return
+	}
+	err := s.store.BindTerminal(request.Context(), request.PathValue("id"), input)
+	if errors.Is(err, ErrLeaseConflict) || errors.Is(err, ErrRunState) {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(response, http.StatusNotFound, errors.New("run not found"))
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteJob(response http.ResponseWriter, request *http.Request) {

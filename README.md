@@ -50,6 +50,7 @@ work.
 | Unattended operation | Scheduled and repository-owned orchestration within fixed commands, repositories, profiles, environment requirements, retry policy, and token budgets |
 | Dashboard and telemetry | Work and run state, workers, routes, agents, reported tokens, prompt cache, server KV cache, model endpoints, and NVIDIA/DGX health without placing high-volume telemetry in the job database |
 | Platforms | Native macOS and Linux workers plus Windows `amd64`/`arm64` workers with Job Object process-tree cancellation; release archives are produced for all six targets |
+| Interactive terminal work | Optional Herdr plugin with editable agent terminals, a workflow picker, a live task board, and a durable run-to-workspace/pane binding |
 
 The first paired shadow task completed with equivalent acceptance, one attempt,
 33.4% lower elapsed time, and 66.0% fewer reported tokens than its historical
@@ -104,6 +105,49 @@ Submit work through the dashboard, CLI, cron trigger, or repository-owned
 orchestrator. Machinist admits only named commands and registered repositories,
 selects a compatible worker, enforces the attempt and token budget, and keeps a
 durable record for review. It does not accept arbitrary remote shell commands.
+
+### Watch and steer an agent in Herdr
+
+Install the bundled plugin, start the dedicated persistent session, and choose
+**Machinist: New interactive workflow** from Herdr’s action menu:
+
+```sh
+herdr plugin link ./plugins/herdr-machinist --enabled
+herdr --session machinist
+```
+
+The picker submits the same canonical Machinist job the dashboard uses. An
+interactive worker inside Herdr creates a workspace at the approved repository,
+starts the configured Codex, Claude, OpenCode/DeepSeek, or other supported
+harness, and sends the prompt through Herdr’s agent API. You can watch the real
+terminal, answer a question, approve work, edit commands, or continue the agent
+conversation. Machinist retains the job, route, attempts, budgets, and exact
+session/workspace/pane/agent binding; it does not record raw keystrokes.
+
+```mermaid
+sequenceDiagram
+    participant U as Operator in Herdr
+    participant P as Machinist plugin
+    participant C as Machinist control plane
+    participant W as Herdr-bound worker
+    participant A as Interactive agent pane
+    U->>P: Pick repo, workflow, model, task
+    P->>C: Submit execution_mode=herdr
+    W->>C: Poll with transport=herdr
+    C-->>W: Lease canonical attempt
+    W->>A: Create workspace + start configured harness
+    W->>C: Store terminal binding
+    W->>A: Prompt and wait for settled state
+    U->>A: Observe or interact when needed
+    A-->>W: done / idle
+    W->>C: Complete attempt with lifecycle evidence
+    C-->>P: Dashboard and task board show final state
+```
+
+The normal service worker advertises `process` only, while the plugin worker
+advertises `herdr` only, so an interactive request cannot silently fall back to
+a headless process. See the [Herdr integration guide](docs/herdr.md) for profile
+examples, DGX routing, lifecycle behavior, and platform-specific operation.
 
 ### See why a run behaved the way it did
 
@@ -200,6 +244,8 @@ auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
 base_url_env = "OPENAI_BASE_URL"
 command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "-"]
+herdr_agent = "codex"
+herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { coder = "ds-0731" }
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
@@ -210,6 +256,8 @@ harness = "codex"
 provider = "openai"
 auth_mode = "subscription"
 command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "-"]
+herdr_agent = "codex"
+herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { coder = "gpt-5.6-sol", fast = "gpt-5.6-luna" }
 
 [profiles.deepseek-api]
@@ -218,6 +266,8 @@ provider = "deepseek"
 auth_mode = "api_key"
 secret_env = "DEEPSEEK_API_KEY"
 command = ["opencode", "run", "--model={{machinist.model}}"]
+herdr_agent = "opencode"
+herdr_args = ["--model={{machinist.model}}"]
 models = { coder = "deepseek/deepseek-reasoner" }
 
 [repositories.my-project]
@@ -369,6 +419,7 @@ profile admission rules.
 | [Buzz/ASF comparison](docs/buzz-asf-comparison.md) | Side-by-side feature matrix, tradeoffs, and switching recommendation |
 | [Configuration](docs/configuration.md) | Commands, profiles, routes, harnesses, providers, models, workers, and repositories |
 | [Observability](docs/observability.md) | Agents, tokens, prompt cache, KV cache, model endpoints, and DGX metrics |
+| [Herdr integration](docs/herdr.md) | Editable agent terminals, plugin actions, harness adapters, lifecycle, and deployment |
 | [Cutover benchmark](benchmarks/README.md) | Paired evidence schema, gates, and evaluation procedure |
 | [Development](docs/development.md) | Build, test, and work on Machinist locally |
 | [VM deployment](docs/vm-deployment.md) | Run the control plane and worker as services |

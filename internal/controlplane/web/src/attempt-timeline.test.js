@@ -10,4 +10,7 @@ test("task detail exposes fenced attempt and fallback evidence", async () => {
   assert.match(source, /run\.max_total_tokens/);
   assert.match(source, /attempt\.error_class/);
   assert.match(source, /attempt\.profile \|\| attempt\.harness/);
+  assert.match(source, /attempt\.terminal\.workspace_id/);
+  assert.match(source, /Interactive Herdr/);
+  assert.match(source, /execution_mode: executionMode/);
 });

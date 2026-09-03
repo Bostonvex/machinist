@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+func TestExecutorRendersSeparateHerdrAdapter(t *testing.T) {
+	worker, err := applyWorkerDefaultsWithHostname(Worker{
+		DataDirectory: t.TempDir(),
+		Executors: map[string]Executor{"codex": {
+			Command:    []string{"codex", "exec", "--model={{machinist.model}}", "-"},
+			Models:     map[string]string{"fast": "gpt-test"},
+			HerdrAgent: "codex", HerdrArgs: []string{"--model={{machinist.model}}", "--sandbox", "workspace-write"},
+		}},
+	}, func() (string, error) { return "test-host", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Name: "implement", Executor: "codex"}, "fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.HerdrAgent != "codex" || strings.Join(resolved.HerdrArgs, " ") != "--model=gpt-test --sandbox workspace-write" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+}
+
 func TestLoadWorkerResolvesRelativePathsFromConfig(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "worker.toml")

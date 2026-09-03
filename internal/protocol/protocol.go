@@ -23,6 +23,7 @@ type PollRequest struct {
 	Models       map[string][]string          `json:"models,omitempty"`
 	Profiles     map[string]ProfileCapability `json:"profiles,omitempty"`
 	Environment  environment.Manifest         `json:"environment,omitempty"`
+	Transports   []string                     `json:"transports,omitempty"`
 }
 
 type PollResponse struct {
@@ -53,6 +54,23 @@ type RunSpec struct {
 	RenderedPrompt     string   `json:"rendered_prompt"`
 	TimeoutMillis      int64    `json:"timeout_millis"`
 	LeaseToken         string   `json:"lease_token"`
+	ExecutionMode      string   `json:"execution_mode,omitempty"`
+	Origin             string   `json:"origin,omitempty"`
+}
+
+type TerminalBinding struct {
+	Session     string `json:"session,omitempty"`
+	WorkspaceID string `json:"workspace_id"`
+	TabID       string `json:"tab_id,omitempty"`
+	PaneID      string `json:"pane_id"`
+	AgentName   string `json:"agent_name"`
+}
+
+type BindTerminalRequest struct {
+	InstanceID string          `json:"instance_id"`
+	LeaseToken string          `json:"lease_token"`
+	AttemptID  string          `json:"attempt_id"`
+	Terminal   TerminalBinding `json:"terminal"`
 }
 
 type Heartbeat struct {

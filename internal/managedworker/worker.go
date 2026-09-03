@@ -17,6 +17,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/environment"
 	"github.com/owainlewis/machinist/internal/harness"
+	"github.com/owainlewis/machinist/internal/herdr"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/runner"
 )
@@ -29,11 +30,17 @@ type Worker struct {
 	stderr         io.Writer
 	heartbeatTicks <-chan time.Time
 	executeRun     func(context.Context, protocol.RunSpec) protocol.Completion
+	transport      string
+	herdrClient    *herdr.Client
 }
 
 const heartbeatInterval = 10 * time.Second
 
 func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) {
+	return NewForTransport(workerConfig, stdout, stderr, "process")
+}
+
+func NewForTransport(workerConfig config.Worker, stdout, stderr io.Writer, transport string) (*Worker, error) {
 	if strings.TrimSpace(workerConfig.Name) == "" {
 		return nil, errors.New("worker name is required")
 	}
@@ -48,12 +55,25 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 	if err != nil {
 		return nil, err
 	}
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	if transport != "process" && transport != "herdr" {
+		return nil, fmt.Errorf("worker transport must be process or herdr")
+	}
+	var herdrClient *herdr.Client
+	if transport == "herdr" {
+		herdrClient, err = herdr.NewFromEnvironment()
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &Worker{
-		config:     workerConfig,
-		instanceID: instanceID,
-		client:     client,
-		stdout:     stdout,
-		stderr:     stderr,
+		config:      workerConfig,
+		instanceID:  instanceID,
+		client:      client,
+		stdout:      stdout,
+		stderr:      stderr,
+		transport:   transport,
+		herdrClient: herdrClient,
 	}, nil
 }
 
@@ -136,11 +156,36 @@ func withHeartbeats[T any](ctx context.Context, w *Worker, spec protocol.RunSpec
 }
 
 func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
+	transport := w.transport
+	if transport == "" {
+		transport = "process"
+	}
 	var workerEnvironment environment.Manifest
 	if w.config.Environment.DetectionEnabled() {
 		workerEnvironment = environment.Detect(w.config.Environment.Tags)
 	}
 	capabilities := harness.Inspect(w.config, workerEnvironment)
+	if transport == "herdr" {
+		interactiveExecutors := make([]string, 0, len(capabilities.Executors))
+		for _, name := range capabilities.Executors {
+			profile, profileOK := w.config.Profiles[name]
+			executor, executorOK := w.config.Executors[name]
+			if (profileOK && strings.TrimSpace(profile.HerdrAgent) != "") || (executorOK && strings.TrimSpace(executor.HerdrAgent) != "") {
+				interactiveExecutors = append(interactiveExecutors, name)
+			}
+		}
+		capabilities.Executors = interactiveExecutors
+		for name := range capabilities.Models {
+			if strings.TrimSpace(w.config.Profiles[name].HerdrAgent) == "" && strings.TrimSpace(w.config.Executors[name].HerdrAgent) == "" {
+				delete(capabilities.Models, name)
+			}
+		}
+		for name := range capabilities.Profiles {
+			if strings.TrimSpace(w.config.Profiles[name].HerdrAgent) == "" {
+				delete(capabilities.Profiles, name)
+			}
+		}
+	}
 	request := protocol.PollRequest{
 		InstanceID:   w.instanceID,
 		Name:         w.config.Name,
@@ -149,6 +194,7 @@ func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 		Models:       capabilities.Models,
 		Profiles:     profileCapabilities(capabilities.Profiles),
 		Environment:  workerEnvironment,
+		Transports:   []string{transport},
 	}
 	var response protocol.PollResponse
 	if err := w.client.Post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
@@ -220,6 +266,28 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	if w.config.Environment.DetectionEnabled() {
 		command.Environment["MACHINIST_ENVIRONMENT_DIGEST"] = environment.Detect(w.config.Environment.Tags).Digest
 	}
+	if spec.ExecutionMode == "herdr" {
+		if w.transport != "herdr" || w.herdrClient == nil {
+			completion.Error = "Herdr execution was assigned to a non-Herdr worker"
+			completion.ErrorClass = "configuration"
+			return completion
+		}
+		interactive, runErr := w.herdrClient.Execute(ctx, spec, command, repository, func(binding protocol.TerminalBinding) error {
+			return w.bindTerminal(ctx, spec, binding)
+		})
+		interactive.InstanceID = w.instanceID
+		interactive.LeaseToken = spec.LeaseToken
+		interactive.AttemptID = spec.AttemptID
+		if interactive.State == "" {
+			interactive.State = "failed"
+			interactive.ExitCode = 1
+			interactive.ErrorClass = "transport"
+		}
+		if runErr != nil && interactive.Error == "" {
+			interactive.Error = runErr.Error()
+		}
+		return interactive
+	}
 	result, runErr := runner.Execute(ctx, runner.Options{
 		RunID:         spec.ID,
 		ArtifactKey:   spec.LeaseToken,
@@ -242,6 +310,12 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 		completion.ErrorClass = classifyExecutionError(result.State, runErr)
 	}
 	return completion
+}
+
+func (w *Worker) bindTerminal(ctx context.Context, spec protocol.RunSpec, binding protocol.TerminalBinding) error {
+	return w.client.Post(ctx, "/api/v1/runs/"+url.PathEscape(spec.ID)+"/terminal", protocol.BindTerminalRequest{
+		InstanceID: w.instanceID, LeaseToken: spec.LeaseToken, AttemptID: spec.AttemptID, Terminal: binding,
+	}, nil)
 }
 
 func retryPrompt(prompt string, spec protocol.RunSpec) string {

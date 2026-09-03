@@ -1,0 +1,96 @@
+id = "bostonvex.machinist"
+name = "Machinist"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Launch, watch, and interact with canonical Machinist workflows from Herdr."
+platforms = ["linux", "macos", "windows"]
+
+[[startup]]
+id = "interactive-worker-unix"
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/start-worker.sh"]
+
+[[startup]]
+id = "interactive-worker-windows"
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/start-worker.ps1"]
+
+[[actions]]
+id = "new-workflow"
+platforms = ["linux", "macos"]
+title = "Machinist: New interactive workflow"
+description = "Choose a repository, workflow, and model, then dispatch it to an editable Herdr agent terminal."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "scripts/open-pane.sh", "workflow-picker"]
+
+[[actions]]
+id = "new-workflow-windows"
+platforms = ["windows"]
+title = "Machinist: New interactive workflow"
+description = "Choose a repository, workflow, and model, then dispatch it to an editable Herdr agent terminal."
+contexts = ["global", "workspace", "pane"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-pane.ps1", "workflow-picker-windows"]
+
+[[actions]]
+id = "task-board"
+platforms = ["linux", "macos"]
+title = "Machinist: Task board"
+description = "Open a live view of Machinist jobs and their Herdr terminal bindings."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "scripts/open-pane.sh", "task-board"]
+
+[[actions]]
+id = "task-board-windows"
+platforms = ["windows"]
+title = "Machinist: Task board"
+description = "Open a live view of Machinist jobs and their Herdr terminal bindings."
+contexts = ["global", "workspace", "pane"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/open-pane.ps1", "task-board-windows"]
+
+[[actions]]
+id = "restart-worker"
+platforms = ["linux", "macos"]
+title = "Machinist: Restart interactive worker"
+description = "Restart the Herdr-bound Machinist worker for this persistent session."
+contexts = ["global", "workspace"]
+command = ["sh", "scripts/restart-worker.sh"]
+
+[[actions]]
+id = "restart-worker-windows"
+platforms = ["windows"]
+title = "Machinist: Restart interactive worker"
+description = "Restart the Herdr-bound Machinist worker for this persistent session."
+contexts = ["global", "workspace"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/restart-worker.ps1"]
+
+[[panes]]
+id = "workflow-picker"
+platforms = ["linux", "macos"]
+title = "New Machinist workflow"
+placement = "popup"
+width = "82%"
+height = "72%"
+command = ["sh", "scripts/run-machinist.sh", "herdr", "picker"]
+
+[[panes]]
+id = "workflow-picker-windows"
+platforms = ["windows"]
+title = "New Machinist workflow"
+placement = "popup"
+width = "82%"
+height = "72%"
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-machinist.ps1", "herdr", "picker"]
+
+[[panes]]
+id = "task-board"
+platforms = ["linux", "macos"]
+title = "Machinist tasks"
+placement = "split"
+command = ["sh", "scripts/run-machinist.sh", "herdr", "watch"]
+
+[[panes]]
+id = "task-board-windows"
+platforms = ["windows"]
+title = "Machinist tasks"
+placement = "split"
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-machinist.ps1", "herdr", "watch"]

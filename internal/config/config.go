@@ -69,8 +69,10 @@ type ControlPlane struct {
 }
 
 type Executor struct {
-	Command []string          `toml:"command"`
-	Models  map[string]string `toml:"models"`
+	Command    []string          `toml:"command"`
+	Models     map[string]string `toml:"models"`
+	HerdrAgent string            `toml:"herdr_agent"`
+	HerdrArgs  []string          `toml:"herdr_args"`
 }
 
 // Profile describes one typed, worker-local harness/provider combination.
@@ -85,6 +87,8 @@ type Profile struct {
 	BaseURLEnv        string            `toml:"base_url_env"`
 	AllowInsecureHTTP bool              `toml:"allow_insecure_http"`
 	Command           []string          `toml:"command"`
+	HerdrAgent        string            `toml:"herdr_agent"`
+	HerdrArgs         []string          `toml:"herdr_args"`
 	Models            map[string]string `toml:"models"`
 	RequiresOS        []string          `toml:"requires_os"`
 	RequiresArch      []string          `toml:"requires_arch"`
@@ -209,6 +213,8 @@ type ResolvedCommand struct {
 	Environment       map[string]string
 	DeniedEnvironment []string
 	Command           []string
+	HerdrAgent        string
+	HerdrArgs         []string
 	Model             string
 	Prompt            string
 	Timeout           time.Duration
@@ -326,6 +332,10 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 		return ResolvedCommand{}, fmt.Errorf("route %q has not been resolved to an available profile", command.Route)
 	}
 	executor, ok := w.Executors[command.Executor]
+	if ok {
+		command.HerdrAgent = strings.ToLower(strings.TrimSpace(executor.HerdrAgent))
+		command.HerdrArgs = renderModelArguments(executor.HerdrArgs, requestedModel, executor.Models)
+	}
 	if !ok {
 		profile, profileOK := w.Profiles[command.Executor]
 		if !profileOK {
@@ -338,6 +348,8 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 		command.AuthMode = profile.AuthMode
 		command.Environment = profileEnvironment(profile)
 		command.DeniedEnvironment = w.otherProfileSecrets(command.Executor, profile.SecretEnv)
+		command.HerdrAgent = profile.HerdrAgent
+		command.HerdrArgs = renderModelArguments(profile.HerdrArgs, requestedModel, profile.Models)
 	}
 	if err := validateCommand(command.Executor, executor.Command); err != nil {
 		return ResolvedCommand{}, err
@@ -355,6 +367,21 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 	}
 	command.Model = model
 	return command, nil
+}
+
+func renderModelArguments(arguments []string, requested string, models map[string]string) []string {
+	model := strings.TrimSpace(requested)
+	if resolved, ok := models[model]; ok {
+		model = strings.TrimSpace(resolved)
+	}
+	rendered := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		if model == "" && strings.Contains(argument, modelParameter) {
+			continue
+		}
+		rendered = append(rendered, strings.ReplaceAll(argument, modelParameter, model))
+	}
+	return rendered
 }
 
 // otherProfileSecrets prevents a selected profile from inheriting API keys
@@ -757,6 +784,11 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		if len(executor.Models) > 0 && !executor.supportsModel() {
 			return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
 		}
+		if err := validateHerdrAdapter(name, executor.HerdrAgent, executor.HerdrArgs, executor.Models); err != nil {
+			return Worker{}, err
+		}
+		executor.HerdrAgent = strings.ToLower(strings.TrimSpace(executor.HerdrAgent))
+		worker.Executors[name] = executor
 	}
 	for name, profile := range worker.Profiles {
 		if err := validateProfile(name, profile); err != nil {
@@ -767,6 +799,7 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		profile.AuthMode = strings.ToLower(strings.TrimSpace(profile.AuthMode))
 		profile.SecretEnv = strings.TrimSpace(profile.SecretEnv)
 		profile.BaseURLEnv = strings.TrimSpace(profile.BaseURLEnv)
+		profile.HerdrAgent = strings.ToLower(strings.TrimSpace(profile.HerdrAgent))
 		profile.RequiresOS = normaliseEnvironmentTags(profile.RequiresOS)
 		profile.RequiresArch = normaliseEnvironmentTags(profile.RequiresArch)
 		profile.RequiresTags = normaliseEnvironmentTags(profile.RequiresTags)
@@ -839,6 +872,9 @@ func validateProfile(name string, profile Profile) error {
 	if len(profile.Models) > 0 && !(Executor{Command: profile.Command}).supportsModel() {
 		return fmt.Errorf("profile %q defines models but its command does not contain %s", name, modelParameter)
 	}
+	if err := validateHerdrAdapter(name, profile.HerdrAgent, profile.HerdrArgs, profile.Models); err != nil {
+		return err
+	}
 	if err := validateProfileEndpoint(name, profile); err != nil {
 		return err
 	}
@@ -852,6 +888,29 @@ func validateProfile(name string, profile Profile) error {
 				return fmt.Errorf("profile %q %s value %q is invalid", name, field, value)
 			}
 		}
+	}
+	return nil
+}
+
+func validateHerdrAdapter(name, agent string, arguments []string, models map[string]string) error {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent != "" {
+		if len(agent) > 64 || !safeEnvironmentTag(agent) {
+			return fmt.Errorf("execution %q herdr_agent is invalid", name)
+		}
+		for _, argument := range arguments {
+			if strings.ContainsAny(argument, "\x00\r\n") {
+				return fmt.Errorf("execution %q herdr_args contain an invalid argument", name)
+			}
+			if strings.Contains(argument, machinistParameterPrefix) && !strings.Contains(argument, modelParameter) {
+				return fmt.Errorf("execution %q herdr_args use an unsupported Machinist parameter", name)
+			}
+		}
+		if len(models) > 0 && !slices.ContainsFunc(arguments, func(argument string) bool { return strings.Contains(argument, modelParameter) }) {
+			return fmt.Errorf("execution %q defines models but herdr_args do not contain %s", name, modelParameter)
+		}
+	} else if len(arguments) > 0 {
+		return fmt.Errorf("execution %q herdr_args require herdr_agent", name)
 	}
 	return nil
 }

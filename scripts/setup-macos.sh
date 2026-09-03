@@ -100,7 +100,7 @@ mkdir -p "$provider_install_directory"
 install -m 0755 "$provider_source" "$provider_install_directory/nvidia-smi-json-provider"
 
 path_entries=("$install_directory")
-for executable in codex claude opencode pi aider; do
+for executable in codex claude opencode pi aider herdr; do
   if executable_path=$(command -v "$executable" 2>/dev/null); then
     path_entries+=("$(dirname "$executable_path")")
   fi
@@ -174,11 +174,23 @@ else
   disable_agent sh.machinist.worker
 fi
 
+herdr_plugin=unavailable
+herdr_binary=$(command -v herdr 2>/dev/null || true)
+herdr_plugin_source=$source_root/plugins/herdr-machinist
+if [[ -n $herdr_binary && -f $herdr_plugin_source/herdr-plugin.toml ]]; then
+  if "$herdr_binary" plugin link "$herdr_plugin_source" --enabled >/dev/null; then
+    herdr_plugin=linked
+  else
+    herdr_plugin=link-failed
+  fi
+fi
+
 printf 'Machinist macOS deployment installed.\n'
 printf '  binary: %s\n  role: %s\n  control plane: %s\n  worker: %s\n' \
   "$machinist_binary" "$machinist_role" \
   "$([[ $machinist_role == all || $machinist_role == control-plane ]] && printf enabled || printf disabled)" \
   "$([[ $worker_enabled == true ]] && printf enabled || printf disabled-until-valid)"
+printf '  Herdr plugin: %s\n' "$herdr_plugin"
 if [[ -n $dgx_ssh_host ]]; then
   printf '  DGX tunnel: %s -> 127.0.0.1:%s\n' "$dgx_ssh_host" "$dgx_local_port"
 fi

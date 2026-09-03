@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/manrope";
 import "@fontsource-variable/newsreader";
-import { Activity, ArrowLeft, BarChart3, Bot, CircleStop, Cpu, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, TimerReset, Trash2, X } from "lucide-react";
+import { Activity, ArrowLeft, BarChart3, Bot, CircleStop, Cpu, GitBranch, LayoutDashboard, Moon, Play, Plus, Server, Sun, Table2, Terminal, TimerReset, Trash2, X } from "lucide-react";
 import { Analytics } from "@/analytics";
 import { CommandsPage, WorkersPage } from "@/catalog";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,7 @@ function App() {
   const [repository, setRepository] = useState("");
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("");
+  const [executionMode, setExecutionMode] = useState("process");
   const [statusError, setStatusError] = useState("");
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -109,7 +110,7 @@ function App() {
       const response = await fetch("/api/v1/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Machinist-CSRF": status.csrf_token },
-        body: JSON.stringify({ prompt, repository, model: model.trim(), command: selection }),
+        body: JSON.stringify({ prompt, repository, model: model.trim(), command: selection, execution_mode: executionMode, origin: "machinist-dashboard" }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -202,7 +203,7 @@ function App() {
             </div>
           </PageHeading>
 
-          {composerOpen && <RunComposer choices={choices} repositories={repositories} selection={selection} setSelection={setSelection} repository={repository} setRepository={setRepository} prompt={prompt} setPrompt={setPrompt} model={model} setModel={setModel} submitting={submitting} submit={submit} close={() => setComposerOpen(false)} />}
+          {composerOpen && <RunComposer choices={choices} repositories={repositories} selection={selection} setSelection={setSelection} repository={repository} setRepository={setRepository} prompt={prompt} setPrompt={setPrompt} model={model} setModel={setModel} executionMode={executionMode} setExecutionMode={setExecutionMode} submitting={submitting} submit={submit} close={() => setComposerOpen(false)} />}
           {(statusError || submitError) && <div role="alert" className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">{submitError || statusError}</div>}
 
           <section>
@@ -254,6 +255,8 @@ function TaskDetail({ job, loaded, error, deleting, canceling, onDelete, onCance
     <dl className="grid border-y border-border sm:grid-cols-2 lg:grid-cols-4">
       <DetailMetric label="Repository" value={job.repository} mono />
       <DetailMetric label="Command" value={job.command} />
+      <DetailMetric label="Execution" value={job.execution_mode === "herdr" ? "Interactive Herdr" : "Headless process"} />
+      <DetailMetric label="Origin" value={job.origin || "machinist"} mono />
       <DetailMetric label="Requested model" value={runModelSummary(job.runs)} mono />
       <DetailMetric label="Submitted" value={formatTimestamp(job.created_at)} />
       <DetailMetric label="Runs" value={`${job.runs.length}`} />
@@ -272,7 +275,7 @@ function TaskDetail({ job, loaded, error, deleting, canceling, onDelete, onCance
       <ol className="mt-3 grid gap-3">{job.runs.map((run, index) => <li key={run.id}><Card className="min-w-0 p-4">
         <div className="flex min-w-0 items-start gap-3"><span className="grid size-7 shrink-0 place-items-center rounded-full border border-border font-mono text-xs text-muted-foreground">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><h3 className="truncate text-sm font-semibold">{run.command}</h3><p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={run.id}>{run.id}</p></div><State value={run.state} /></div>
           <dl className="mt-4 grid gap-x-6 gap-y-3 border-t border-border pt-3 sm:grid-cols-2 lg:grid-cols-4"><RunMetric label="Executor" value={run.executor} mono /><RunMetric label="Route" value={run.route || "Direct"} mono /><RunMetric label="Profile" value={run.profile || run.executor} mono /><RunMetric label="Harness" value={run.harness || run.executor} mono /><RunMetric label="Provider" value={run.provider || "Harness default"} mono /><RunMetric label="Role" value={run.role || "Unspecified"} /><RunMetric label="Auth mode" value={run.auth_mode || "Legacy executor"} /><RunMetric label="Attempts" value={`${run.attempt_count || 0} / ${run.max_attempts || 1}`} /><RunMetric label="Token budget" value={run.max_total_tokens ? `${formatTokenUsage(run.max_total_tokens)} tokens` : "Not set"} /><RunMetric label="Last error class" value={run.last_error_class || "None"} mono /><RunMetric label="Requested model" value={run.model || "Executor default"} mono /><RunMetric label="Worker" value={run.worker_name || "Unassigned"} /><RunMetric label="Duration" value={Number.isSafeInteger(run.duration_millis) ? formatDurationMillis(run.duration_millis) : "Unavailable"} /><RunMetric label="Tokens" value={formatTokenUsage(run.token_usage) === "Unavailable" ? "Not reported" : `${formatTokenUsage(run.token_usage)} tokens`} /><RunMetric label="Started" value={formatTimestamp(run.started_at)} /><RunMetric label="Completed" value={formatTimestamp(run.completed_at)} /><RunMetric label="Exit code" value={run.exit_code === undefined ? "Unavailable" : String(run.exit_code)} /></dl>
-          {run.attempts?.length ? <div className="mt-4 border-t border-border pt-3"><p className="text-xs font-medium text-muted-foreground">Attempt timeline</p><ol className="mt-2 grid gap-2">{run.attempts.map((attempt) => <li key={attempt.id} className="grid gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs sm:grid-cols-[5rem_minmax(8rem,1fr)_minmax(8rem,1fr)_7rem] sm:items-center"><span className="font-medium">Attempt {attempt.number}</span><span className="truncate font-mono" title={attempt.profile || attempt.harness}>{attempt.profile || attempt.harness || "Legacy executor"}</span><span className="truncate text-muted-foreground" title={attempt.error || attempt.error_class}>{attempt.error_class || attempt.error || "No error"}</span><State value={attempt.state} /></li>)}</ol></div> : null}
+          {run.attempts?.length ? <div className="mt-4 border-t border-border pt-3"><p className="text-xs font-medium text-muted-foreground">Attempt timeline</p><ol className="mt-2 grid gap-2">{run.attempts.map((attempt) => <li key={attempt.id} className="grid gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs sm:grid-cols-[5rem_minmax(8rem,1fr)_minmax(8rem,1fr)_7rem] sm:items-center"><span className="font-medium">Attempt {attempt.number}</span><span className="truncate font-mono" title={attempt.profile || attempt.harness}>{attempt.profile || attempt.harness || "Legacy executor"}</span><span className="truncate text-muted-foreground" title={attempt.terminal ? `${attempt.terminal.session} / ${attempt.terminal.workspace_id} / ${attempt.terminal.pane_id}` : attempt.error || attempt.error_class}>{attempt.terminal ? <><Terminal className="mr-1 inline size-3" />{attempt.terminal.session} · {attempt.terminal.workspace_id} · {attempt.terminal.agent_name}</> : attempt.error_class || attempt.error || "No error"}</span><State value={attempt.state} /></li>)}</ol></div> : null}
           {run.error && <div className="mt-4 border-l-2 border-danger pl-3"><p className="text-xs font-medium text-danger">Error</p><p className="mt-1 break-words text-sm text-danger">{run.error}</p></div>}
         </div></div>
       </Card></li>)}</ol>
@@ -283,7 +286,7 @@ function TaskDetail({ job, loaded, error, deleting, canceling, onDelete, onCance
 function DetailMetric({ label, value, mono = false }) { return <div className="min-w-0 border-b border-border py-3 last:border-b-0 sm:border-r sm:px-4 sm:first:pl-0 lg:border-b-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-1 truncate text-sm font-medium", mono && "font-mono")} title={value}>{value}</dd></div>; }
 function RunMetric({ label, value, mono = false }) { return <div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-0.5 truncate text-sm", mono && "font-mono")} title={value}>{value}</dd></div>; }
 
-function RunComposer({ choices, repositories, selection, setSelection, repository, setRepository, prompt, setPrompt, model, setModel, submitting, submit, close }) {
+function RunComposer({ choices, repositories, selection, setSelection, repository, setRepository, prompt, setPrompt, model, setModel, executionMode, setExecutionMode, submitting, submit, close }) {
   return <Card className="overflow-hidden border-primary/25">
     <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-5">
       <h2 className="text-sm font-semibold">New run</h2>
@@ -294,9 +297,12 @@ function RunComposer({ choices, repositories, selection, setSelection, repositor
         <label><span className="field-label">Run with</span><select className="field-control" value={selection} onChange={(event) => setSelection(event.target.value)} required>{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>
         <label><span className="field-label">Repository</span><select className="field-control font-mono" value={repository} onChange={(event) => setRepository(event.target.value)} disabled={!repositories.length} required>{repositories.length ? repositories.map((name) => <option key={name} value={name}>{name}</option>) : <option value="">No registered repositories</option>}</select></label>
       </div>
-      <label><span className="field-label">Model <span className="font-normal normal-case tracking-normal text-muted-foreground">optional</span></span><input className="field-control font-mono" value={model} onChange={(event) => setModel(event.target.value)} placeholder="luna" maxLength={128} /></label>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label><span className="field-label">Model <span className="font-normal normal-case tracking-normal text-muted-foreground">optional</span></span><input className="field-control font-mono" value={model} onChange={(event) => setModel(event.target.value)} placeholder="luna" maxLength={128} /></label>
+        <label><span className="field-label">Execution</span><select className="field-control" value={executionMode} onChange={(event) => setExecutionMode(event.target.value)}><option value="process">Headless process</option><option value="herdr">Interactive Herdr terminal</option></select></label>
+      </div>
       <label><span className="field-label">Prompt</span><textarea className="field-control min-h-28 resize-y" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Work on ticket https://github.com/acme/repo/issues/123" required /></label>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-xs text-muted-foreground">The prompt is sent to the command on standard input.</p><Button disabled={submitting || !selection || !repository}>{submitting ? "Submitting…" : "Submit run"}<Play className="size-3.5" /></Button></div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-xs text-muted-foreground">{executionMode === "herdr" ? "The agent opens in an editable Herdr workspace and is tracked here." : "The prompt runs unattended through the configured process harness."}</p><Button disabled={submitting || !selection || !repository}>{submitting ? "Submitting…" : "Submit run"}<Play className="size-3.5" /></Button></div>
     </form>
   </Card>;
 }

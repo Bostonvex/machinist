@@ -48,6 +48,8 @@ tags = ["trusted", "dgx-spark"]
 harness = "codex"
 auth_mode = "subscription"
 command = ["codex", "exec", "--json", "--model={{machinist.model}}", "-"]
+herdr_agent = "codex"
+herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { fast = "gpt-5.6-luna", deep = "gpt-5.6-sol" }
 
 [profiles.deepseek]
@@ -56,6 +58,8 @@ provider = "deepseek"
 auth_mode = "api_key"
 secret_env = "DEEPSEEK_API_KEY"
 command = ["opencode", "run", "--model={{machinist.model}}"]
+herdr_agent = "opencode"
+herdr_args = ["--model={{machinist.model}}"]
 models = { reasoner = "deepseek/deepseek-reasoner" }
 
 [profiles.dgx-local]
@@ -65,6 +69,8 @@ auth_mode = "local"
 base_url = "http://127.0.0.1:8000/v1"
 base_url_env = "OPENAI_BASE_URL"
 command = ["opencode", "run", "--model={{machinist.model}}"]
+herdr_agent = "opencode"
+herdr_args = ["--model={{machinist.model}}"]
 models = { coder = "openai/local-coder" }
 requires_tags = ["dgx-spark"]
 ```
@@ -86,6 +92,14 @@ Profile requirements may use `requires_os`, `requires_arch`, and
 operator assertions and are the only environment facts that may grant trust.
 Workers advertise unavailable profiles with a redacted reason but do not accept
 work for them.
+
+`command` is the non-interactive process adapter. `herdr_agent` and
+`herdr_args` are the separate interactive adapter for the same logical profile.
+The model alias is resolved once and inserted into both argument arrays. A
+Herdr worker advertises only profiles and executors that define `herdr_agent`;
+this prevents an interactive job from being claimed by a profile that can only
+run headlessly. Herdr agent kinds are validated again by the installed Herdr
+binary when the interactive pane starts.
 
 ## Ordered routes
 

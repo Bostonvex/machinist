@@ -403,7 +403,7 @@ func TestSubmitQueuesAgentWithConfiguredBearerToken(t *testing.T) {
 	if gotAuthorization != "Bearer secret" {
 		t.Fatalf("authorization = %q", gotAuthorization)
 	}
-	if gotRequest != (submitJobRequest{Prompt: "fix issue 13", Repository: "machinist", Command: "plan", Model: "luna"}) {
+	if gotRequest != (submitJobRequest{Prompt: "fix issue 13", Repository: "machinist", Command: "plan", Model: "luna", ExecutionMode: "process", Origin: "machinist-cli"}) {
 		t.Fatalf("submission = %#v", gotRequest)
 	}
 }
