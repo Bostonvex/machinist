@@ -25,6 +25,12 @@ Machinist is an open-source software factory implementation. It runs on your mac
 
 Please note: this is early access software and subject to change. 
 
+<p align="center">
+  <img src=".github/assets/screenshots/task-analytics.jpg" width="900" alt="Machinist task analytics showing completion time, success rate, reported tokens, and per-run measurements">
+</p>
+
+<p align="center"><sub>Live task analytics from the Mac mini deployment. Values are deployment-specific.</sub></p>
+
 ## Adaptive agent platform release candidate
 
 The Bostonvex `v0.5.0-rc.5` release extends Machinist into an
@@ -63,6 +69,71 @@ evidence, and adoption criteria.
 - **Inspect every run.** Stream output, retain durable events and artifacts, and track terminal outcomes, duration, and reported token use.
 - **Bound unattended work.** Fixed catalogs, profile routes, environment requirements, retry policy, and budgets constrain scheduled or repository-owned automation.
 
+## What you can do
+
+### Run one supervised task
+
+Use Machinist as a thin local wrapper around an existing agent CLI. This is the
+smallest useful setup and does not require the control plane or dashboard:
+
+```sh
+machinist run \
+  --command=foreman \
+  --repo=/absolute/path/to/my-project \
+  --model=terra \
+  --prompt="Implement issue 42, run the relevant tests, and open a pull request."
+```
+
+### Route work across local, subscription, and API models
+
+One logical `implement` command can prefer a local DGX model, use an existing
+Codex subscription when local capacity is unavailable, and call DeepSeek only
+for configured fallback conditions. The repository and every credential stay
+on the worker.
+
+```text
+implementation route
+  1. dgx-local           local inference, no per-token API charge
+  2. codex-subscription  existing signed-in Codex CLI session
+  3. deepseek-api        worker-local DEEPSEEK_API_KEY
+```
+
+### Leave bounded work running while you are away
+
+Submit work through the dashboard, CLI, cron trigger, or repository-owned
+orchestrator. Machinist admits only named commands and registered repositories,
+selects a compatible worker, enforces the attempt and token budget, and keeps a
+durable record for review. It does not accept arbitrary remote shell commands.
+
+### See why a run behaved the way it did
+
+Each run records the chosen worker, environment, profile, harness, provider,
+authentication mode, model alias, attempt number, normalized failure class,
+duration, exit code, and reported token total. A fallback is another explicit
+attempt, not an invisible replay of the full transcript.
+
+## How a task flows
+
+```mermaid
+flowchart LR
+    request["Human, CLI, schedule,<br/>or repository workflow"] --> control["Control plane<br/>durable job"]
+    control --> admission{"Allowed command + repo?<br/>Compatible worker online?"}
+    admission -->|No| wait["Queue or reject<br/>with a concrete reason"]
+    admission -->|Yes| local["Attempt 1<br/>local / DGX profile"]
+    local -->|Success| result["Result, logs,<br/>tokens, artifacts"]
+    local -->|Configured failure class| budget{"Attempts and token<br/>budget remain?"}
+    budget -->|Yes| subscription["Attempt 2<br/>subscription profile"]
+    subscription -->|Success| result
+    subscription -->|Configured failure class| api["Attempt 3<br/>API profile"]
+    api --> result
+    budget -->|No| stop["Stop safely<br/>and preserve evidence"]
+    result --> dashboard["Dashboard + telemetry<br/>for operator review"]
+```
+
+The next attempt receives only a compact handoff containing the attempt number,
+budget, and previous error class. It does not inherit an ever-growing transcript,
+which limits repeated context and cross-provider leakage.
+
 <a id="quick-start"></a>
 
 ## Quick start
@@ -92,11 +163,202 @@ Run it directly:
 ./bin/machinist run --command=foreman --repo=/path/to/repo --prompt="Implement issue 42"
 ```
 
+Then visit `http://127.0.0.1:7331` if you start the managed control plane.
+
 ## How execution works
 
 For a direct run, Machinist maps the configured command name to a fixed executable and uses the path supplied with `--repo` as the working directory. Managed submissions instead resolve an approved repository name from the worker configuration. In both cases, Machinist renders the prompt, sends it on standard input, streams stdout and stderr, and applies one overall timeout and cancellation. Exit code 0 succeeds; every non-zero exit code fails.
 
 Scripts are intentionally opaque. Their internal stages appear in logs, but Machinist does not invent child runs, graphs, checkpoints, or resumable stages. A killed script restarts from the beginning unless the script owns checkpointing.
+
+## Complete routing example
+
+The control plane owns the safe command and routing policy. The worker owns
+executables, credentials, local endpoints, environment facts, and repository
+paths.
+
+### 1. Define worker-local profiles
+
+Add profiles and the approved checkout to `~/.machinist/worker.toml`:
+
+```toml
+name = "mac-mini"
+data_directory = "~/.machinist/worker"
+
+[control_plane]
+url = "http://127.0.0.1:7331"
+token_file = "~/.machinist/server/worker.token"
+
+[environment]
+detect = true
+tags = ["mac-mini", "dgx-client", "trusted"]
+
+[profiles.dgx-local]
+harness = "codex"
+provider = "openai_compatible"
+auth_mode = "local"
+base_url = "http://127.0.0.1:18000/v1"
+base_url_env = "OPENAI_BASE_URL"
+command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "-"]
+models = { coder = "ds-0731" }
+requires_os = ["darwin"]
+requires_arch = ["arm64"]
+requires_tags = ["mac-mini", "dgx-client"]
+
+[profiles.codex-subscription]
+harness = "codex"
+provider = "openai"
+auth_mode = "subscription"
+command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "-"]
+models = { coder = "gpt-5.6-sol", fast = "gpt-5.6-luna" }
+
+[profiles.deepseek-api]
+harness = "opencode"
+provider = "deepseek"
+auth_mode = "api_key"
+secret_env = "DEEPSEEK_API_KEY"
+command = ["opencode", "run", "--model={{machinist.model}}"]
+models = { coder = "deepseek/deepseek-reasoner" }
+
+[repositories.my-project]
+path = "/absolute/path/to/my-project"
+```
+
+`harness` also accepts bounded custom identifiers, so a real DeepSeek-specific
+CLI, Aider, or an organization-owned adapter can be registered without changing
+Machinist. The command remains an argument array; it is never evaluated through
+a shell.
+
+### 2. Define the ordered route
+
+Add the policy to `~/.machinist/config.toml`:
+
+```toml
+[server]
+listen = "127.0.0.1:7331"
+database = "~/.machinist/server/machinist.db"
+worker_token_file = "~/.machinist/server/worker.token"
+
+[routes.implementation]
+profiles = ["dgx-local", "codex-subscription", "deepseek-api"]
+max_attempts = 3
+max_total_tokens = 200000
+fallback_on = ["capacity", "rate_limit", "transient", "model_unavailable", "harness_crash", "timeout"]
+
+[commands.implement]
+route = "implementation"
+role = "implementer"
+prompt_file = "prompts/foreman.md"
+timeout = "120m"
+```
+
+If the DGX endpoint is unavailable before admission, the local profile is not
+advertised and the next compatible profile can claim the job without wasting an
+attempt. If an execution fails, fallback occurs only for a listed failure class.
+Authentication, policy, unknown failures, and an exhausted or unprovable token
+budget stop the run.
+
+### 3. Validate, start, and submit
+
+```sh
+# Terminal 1: start the control plane and dashboard.
+machinist start
+
+# Terminal 2: validate the machine-local configuration, then start the worker.
+machinist worker validate
+machinist worker start
+
+# Terminal 3: queue a task by logical names, never by a remote path or command.
+machinist submit \
+  --repo=my-project \
+  --command=implement \
+  --model=coder \
+  --prompt="Implement issue 42, run tests, and leave the result ready for review."
+```
+
+For persistent services, use the supplied macOS LaunchAgent or Linux systemd
+deployment guides rather than keeping terminals open.
+
+<p align="center">
+  <img src=".github/assets/screenshots/worker-profiles.jpg" width="900" alt="Machinist worker page showing the connected Mac mini, repositories, environment, and available Codex, Claude, and DGX profiles">
+</p>
+
+<p align="center"><sub>A connected macOS worker advertising only its approved repositories and available profiles.</sub></p>
+
+## Attempts, fallback, and rework
+
+Suppose the route above encounters local capacity pressure:
+
+1. `dgx-local` starts attempt 1 and reports `capacity`.
+2. Machinist preserves its output and usage, then verifies that `capacity` is in
+   `fallback_on` and that the aggregate budget remains provable.
+3. `codex-subscription` starts attempt 2 with a compact failure-class handoff,
+   not the complete attempt-1 conversation.
+4. A success ends the route. Another allowed transient failure can advance to
+   `deepseek-api`; a test, authentication, policy, or unknown failure stops.
+5. Late results from a lost lease are rejected by the attempt fence instead of
+   overwriting the current run.
+
+This makes fallback visible and bounded. Repository-owned orchestration can add
+checkpoints or role handoffs, while Machinist remains responsible for safe
+execution, cancellation, provenance, and budgets.
+
+<p align="center">
+  <img src=".github/assets/screenshots/run-provenance.jpg" width="900" alt="Completed Machinist DGX run showing repository, command, local model, profile, provider, authentication, attempt count, duration, tokens, worker, and exit code">
+</p>
+
+<p align="center"><sub>A real read-only DGX canary: one local Codex attempt, its exact provider and profile, duration, tokens, and terminal result.</sub></p>
+
+## Dashboard
+
+The control plane serves a local web UI on the same address as its API:
+
+| View | Questions it answers |
+| --- | --- |
+| Runs | What is queued, running, failed, or finished? What did each attempt use and return? |
+| Analytics | How long are tasks taking? What is the success rate and reported token coverage? |
+| Agents & infra | Which agents and models are active? Are prompt cache, server KV cache, GPU, and DGX providers fresh? |
+| Workers | Which hosts are connected? What OS/architecture, repositories, profiles, and trusted tags do they advertise? |
+| Triggers | Which schedules can create work, and for which fixed command/repository pair? |
+| Commands | Which approved commands, routes, roles, timeouts, and models can be submitted? |
+
+High-frequency agent and infrastructure telemetry remains in the separate
+collector database. The control plane uses a read-only, fail-open bridge: a slow
+telemetry view can degrade without blocking job execution.
+
+## Deployment patterns
+
+```mermaid
+flowchart TB
+    operator["Operator browser / CLI"] -->|loopback or verified SSH tunnel| hub
+
+    subgraph mac["Mac mini"]
+      hub["Machinist control plane<br/>dashboard + durable jobs"]
+      worker["Machinist worker<br/>repos + harness subscriptions"]
+      collector["Observability collector<br/>agents + tokens + cache + GPU"]
+      tunnel["Verified DGX SSH tunnel"]
+      hub <--> worker
+      hub -. read-only .-> collector
+      worker -. metadata events .-> collector
+      worker --> tunnel
+    end
+
+    subgraph dgx["DGX Sparks"]
+      model["OpenAI-compatible model server<br/>local model + KV cache metrics"]
+      gpu["NVIDIA telemetry<br/>utilization + memory + power"]
+    end
+
+    tunnel --> model
+    model -. metrics .-> collector
+    gpu -. metrics .-> collector
+    worker -->|fallback when policy permits| subscription["Codex / Claude<br/>subscription CLI"]
+    worker -->|optional API profile| providers["DeepSeek or other API"]
+```
+
+The DGX machines serve models; they do not need repository credentials or coding
+worker authority. Additional macOS, Linux, or Windows workers can connect to the
+same control plane, subject to the same command, repository, environment, and
+profile admission rules.
 
 ## Go deeper
 
