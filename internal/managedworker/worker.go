@@ -37,8 +37,8 @@ func New(workerConfig config.Worker, stdout, stderr io.Writer) (*Worker, error) 
 	if strings.TrimSpace(workerConfig.Name) == "" {
 		return nil, errors.New("worker name is required")
 	}
-	if len(workerConfig.Executors) == 0 || len(workerConfig.Repositories) == 0 {
-		return nil, errors.New("managed worker requires at least one executor and repository")
+	if len(workerConfig.Executors)+len(workerConfig.Profiles) == 0 || len(workerConfig.Repositories) == 0 {
+		return nil, errors.New("managed worker requires at least one executor or profile and a repository")
 	}
 	client, err := NewClient(workerConfig)
 	if err != nil {

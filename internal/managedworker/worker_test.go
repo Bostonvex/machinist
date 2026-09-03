@@ -235,6 +235,25 @@ func TestManagedWorkerRequiresHTTPSForRemoteControlPlane(t *testing.T) {
 	}
 }
 
+func TestManagedWorkerAcceptsProfileOnlyConfiguration(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "worker.token")
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := New(config.Worker{
+		Name:          "profile-only",
+		DataDirectory: t.TempDir(),
+		ControlPlane:  config.ControlPlane{URL: "http://127.0.0.1:7331", TokenFile: tokenFile},
+		Profiles: map[string]config.Profile{
+			"local": {Harness: "deepseek", AuthMode: "local", Command: []string{"agent"}},
+		},
+		Repositories: map[string]config.Repository{"machinist": {Path: "."}},
+	}, io.Discard, io.Discard)
+	if err != nil || worker == nil {
+		t.Fatalf("profile-only worker = %#v, %v", worker, err)
+	}
+}
+
 func TestCompletionDoesNotRetryPermanentClientError(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {

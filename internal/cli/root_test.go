@@ -665,7 +665,7 @@ func TestWorkerValidateRequiresRepository(t *testing.T) {
 
 	var stderr bytes.Buffer
 	exitCode := Execute(t.Context(), []string{"worker", "validate"}, strings.NewReader(""), &bytes.Buffer{}, &stderr, "test")
-	if exitCode != 2 || !strings.Contains(stderr.String(), "requires at least one executor and repository") {
+	if exitCode != 2 || !strings.Contains(stderr.String(), "requires at least one executor or profile and a repository") {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
