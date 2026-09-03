@@ -357,7 +357,7 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 			results <- result{name: item.name, body: body, err: err}
 		}()
 	}
-	payload := observabilityResponse{Enabled: true, Available: true, Summary: s.cachedObservabilitySummary()}
+	payload := observabilityResponse{Enabled: true, Available: true}
 	partialFailures := 0
 	for range queries {
 		item := <-results
@@ -384,6 +384,7 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 	if payload.Available && partialFailures > 0 {
 		payload.Error = "some observability views timed out; showing available data"
 	}
+	payload.Summary = s.cachedObservabilitySummary()
 	writeJSON(response, http.StatusOK, payload)
 }
 

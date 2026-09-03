@@ -757,12 +757,22 @@ func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
 		"/api/v1/turns?limit=100":   `{"turns":[]}`,
 		"/api/v1/samples?limit=500": `{"samples":[]}`,
 	}
+	liveRequests := make(chan struct{}, 4)
+	summaryObservedAfter := make(chan int, 1)
 	collector := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		body, ok := want[request.URL.RequestURI()]
 		if !ok {
 			t.Errorf("unexpected collector request %q", request.URL.RequestURI())
 			http.NotFound(response, request)
 			return
+		}
+		if request.URL.RequestURI() == "/api/v1/summary" {
+			summaryObservedAfter <- len(liveRequests)
+		} else {
+			select {
+			case liveRequests <- struct{}{}:
+			default:
+			}
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(response, body)
@@ -803,6 +813,9 @@ func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
 	}
 	if len(body.Summary) == 0 {
 		t.Fatal("observability summary did not populate asynchronously")
+	}
+	if count := <-summaryObservedAfter; count != 4 {
+		t.Fatalf("summary started after %d live requests, want 4", count)
 	}
 }
 
