@@ -27,13 +27,19 @@ url = "http://127.0.0.1:7900"
 Open the **Agents & infra** page in the Machinist UI. It shows fleet and agent
 state, exact model throughput and TTFT coverage, vLLM running/waiting requests,
 server KV cache, NVIDIA/DGX utilisation, temperature and power, and provider
-health. The bridge requests five fixed JSON endpoints, rejects redirects and
+health. Hardware `node_id` and model `endpoint_id` values remain separate in a
+per-node view; samples older than 45 seconds are marked stale instead of being
+shown as a healthy zero. The bridge requests fixed read-only JSON endpoints,
+keeps the collector's heavier summary off the interactive request path, and
+continues to show available live data if one optional view times out. It rejects redirects and
 non-loopback destinations, caps each response, and never proxies browser-chosen
 URLs or collector write endpoints.
 
 The URL is intentionally restricted to the collector's literal loopback event
 endpoint. Remote workers should forward events through a separately secured
-transport rather than exposing the collector listener.
+transport rather than exposing the collector listener. See
+[Private multi-host fleet deployment](fleet-deployment.md) for the verified SSH
+tunnel topology used by Linux workers.
 
 Instrumented child harnesses receive provider-neutral
 `MACHINIST_TELEMETRY_*` variables and compatibility `BUZZ_TELEMETRY_*`

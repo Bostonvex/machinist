@@ -164,7 +164,7 @@ func Execute(ctx context.Context, options Options) (result Result, returnErr err
 	executorCommand := structuredCommand(executionKind, options.Command.Command)
 	command := exec.Command(executorCommand[0], executorCommand[1:]...)
 	command.Dir = repository
-	command.Env = append(sanitizedEnvironment(os.Environ()), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
+	command.Env = append(sanitizedEnvironment(os.Environ(), options.Command.DeniedEnvironment...), "MACHINIST_RUN_ID="+runID, "MACHINIST_REPOSITORY="+repository, tokenUsageEnvironment+"="+tokenUsagePath)
 	for _, name := range sortedEnvironmentNames(options.Command.Environment) {
 		command.Env = append(command.Env, name+"="+options.Command.Environment[name])
 	}
@@ -611,11 +611,15 @@ func createDurableDirectory(path string) error {
 	return nil
 }
 
-func sanitizedEnvironment(environ []string) []string {
+func sanitizedEnvironment(environ []string, denied ...string) []string {
+	deniedNames := make(map[string]bool, len(denied))
+	for _, name := range denied {
+		deniedNames[name] = true
+	}
 	clean := make([]string, 0, len(environ))
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
-		if isRepositoryGitEnvironment(name) {
+		if isRepositoryGitEnvironment(name) || deniedNames[name] {
 			continue
 		}
 		clean = append(clean, entry)

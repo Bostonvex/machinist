@@ -31,6 +31,10 @@ Run the local, non-mutating tests with:
 python3 -m unittest discover -s evals -p 'test_*.py'
 ```
 
+This suite also enforces the Linux fleet deployment contract: role-aware
+bootstrap syntax, remote-worker independence from a local control plane, strict
+SSH host verification, and loopback-only control-plane and collector forwards.
+
 ## Cutover metrics
 
 `evals.cutover_metrics` compares paired Buzz and Machinist measurements and

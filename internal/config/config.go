@@ -194,25 +194,26 @@ type Route struct {
 }
 
 type ResolvedCommand struct {
-	Name           string
-	Executor       string
-	Profile        string
-	Route          string
-	Candidates     []string
-	MaxAttempts    int
-	MaxTotalTokens int64
-	FallbackOn     []string
-	Harness        string
-	Provider       string
-	AuthMode       string
-	Role           string
-	Environment    map[string]string
-	Command        []string
-	Model          string
-	Prompt         string
-	Timeout        time.Duration
-	Definition     string
-	Hash           string
+	Name              string
+	Executor          string
+	Profile           string
+	Route             string
+	Candidates        []string
+	MaxAttempts       int
+	MaxTotalTokens    int64
+	FallbackOn        []string
+	Harness           string
+	Provider          string
+	AuthMode          string
+	Role              string
+	Environment       map[string]string
+	DeniedEnvironment []string
+	Command           []string
+	Model             string
+	Prompt            string
+	Timeout           time.Duration
+	Definition        string
+	Hash              string
 }
 
 func LoadWorker(path string) (Worker, error) {
@@ -336,6 +337,7 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 		command.Provider = profile.Provider
 		command.AuthMode = profile.AuthMode
 		command.Environment = profileEnvironment(profile)
+		command.DeniedEnvironment = w.otherProfileSecrets(command.Executor, profile.SecretEnv)
 	}
 	if err := validateCommand(command.Executor, executor.Command); err != nil {
 		return ResolvedCommand{}, err
@@ -353,6 +355,21 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 	}
 	command.Model = model
 	return command, nil
+}
+
+// otherProfileSecrets prevents a selected profile from inheriting API keys
+// declared by other profiles. Normal worker environment, including harness
+// subscription sessions and repository credentials, remains compatible.
+func (w Worker) otherProfileSecrets(selected, selectedSecret string) []string {
+	selectedSecret = strings.TrimSpace(selectedSecret)
+	denied := make(map[string]bool)
+	for name, profile := range w.Profiles {
+		secret := strings.TrimSpace(profile.SecretEnv)
+		if name != selected && secret != "" && secret != selectedSecret {
+			denied[secret] = true
+		}
+	}
+	return sortedMapKeys(denied)
 }
 
 // ResolveRoute chooses the first configured candidate present in available.

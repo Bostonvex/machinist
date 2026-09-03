@@ -1,0 +1,16 @@
+# Select this machine-local Codex profile with `codex --profile dgx-spark`.
+# The SSH LaunchAgent forwards the DGX Responses API to this loopback origin.
+model = "ds-0731"
+model_provider = "machinist_dgx_spark"
+model_context_window = 1048576
+model_supports_reasoning_summaries = false
+model_reasoning_effort = "low"
+
+[model_providers.machinist_dgx_spark]
+name = "DGX Spark cluster"
+base_url = "http://127.0.0.1:18000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000

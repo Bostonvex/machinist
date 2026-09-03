@@ -13,6 +13,21 @@ if [[ ! $machinist_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]];
   exit 2
 fi
 
+machinist_repository=${MACHINIST_REPOSITORY:-owainlewis/machinist}
+if [[ ! $machinist_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "MACHINIST_REPOSITORY must be an owner/repository name" >&2
+  exit 2
+fi
+
+machinist_node_role=${MACHINIST_NODE_ROLE:-all}
+case $machinist_node_role in
+  all | control-plane | worker) ;;
+  *)
+    echo "MACHINIST_NODE_ROLE must be all, control-plane, or worker" >&2
+    exit 2
+    ;;
+esac
+
 legacy_root_install=false
 if [[ -d /root/.machinist ]]; then
   legacy_root_install=true
@@ -52,25 +67,29 @@ if [[ -z $runtime_home || ! -d $runtime_home ]]; then
   exit 1
 fi
 
-# Codex and Claude Code use per-user credentials, so install their standalone
-# distributions as the account that will run Machinist.
-runuser -u "$runtime_user" -- env HOME="$runtime_home" \
-  bash -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
-runuser -u "$runtime_user" -- env HOME="$runtime_home" \
-  bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
-curl -fsSL "https://raw.githubusercontent.com/owainlewis/machinist/$machinist_version/install.sh" | \
-  env MACHINIST_VERSION="$machinist_version" sh
+# Codex and Claude Code are worker dependencies. A dedicated control-plane node
+# does not receive model credentials or agent launchers.
+if [[ $machinist_node_role != control-plane ]]; then
+  runuser -u "$runtime_user" -- env HOME="$runtime_home" \
+    bash -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
+  runuser -u "$runtime_user" -- env HOME="$runtime_home" \
+    bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+fi
+curl -fsSL "https://raw.githubusercontent.com/$machinist_repository/$machinist_version/install.sh" | \
+  env MACHINIST_VERSION="$machinist_version" MACHINIST_REPOSITORY="$machinist_repository" sh
 
-# Standalone agent installers use ~/.local/bin. Login shells commonly add that
-# directory to PATH, but services and other non-interactive processes do not.
-for agent_command in codex claude; do
-  agent_path="$runtime_home/.local/bin/$agent_command"
-  if [[ ! -x "$agent_path" ]]; then
-    echo "$agent_command installer did not create $agent_path" >&2
-    exit 1
-  fi
-  ln -sfn "$agent_path" "/usr/local/bin/$agent_command"
-done
+if [[ $machinist_node_role != control-plane ]]; then
+  # Standalone agent installers use ~/.local/bin. Login shells commonly add
+  # that directory to PATH, but services and other non-interactive processes do not.
+  for agent_command in codex claude; do
+    agent_path="$runtime_home/.local/bin/$agent_command"
+    if [[ ! -x "$agent_path" ]]; then
+      echo "$agent_command installer did not create $agent_path" >&2
+      exit 1
+    fi
+    ln -sfn "$agent_path" "/usr/local/bin/$agent_command"
+  done
+fi
 
 runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist init
 
@@ -83,21 +102,25 @@ if systemctl is-active --quiet machinist-worker.service 2>/dev/null; then
   worker_was_active=true
 fi
 
-service_base_url="https://raw.githubusercontent.com/owainlewis/machinist/$machinist_version/deploy/systemd"
+service_base_url="https://raw.githubusercontent.com/$machinist_repository/$machinist_version/deploy/systemd"
 service_tmp_dir=$(mktemp -d)
 trap 'rm -rf "$service_tmp_dir"' EXIT
-curl -fsSL "$service_base_url/machinist-control-plane.service" \
-  -o "$service_tmp_dir/machinist-control-plane.service"
-curl -fsSL "$service_base_url/machinist-worker.service" \
-  -o "$service_tmp_dir/machinist-worker.service"
-install -m 0644 "$service_tmp_dir/machinist-control-plane.service" \
-  /etc/systemd/system/machinist-control-plane.service
-install -m 0644 "$service_tmp_dir/machinist-worker.service" \
-  /etc/systemd/system/machinist-worker.service
+for service in machinist-control-plane.service machinist-worker.service machinist-fleet-tunnel@.service; do
+  curl -fsSL "$service_base_url/$service" -o "$service_tmp_dir/$service"
+  install -m 0644 "$service_tmp_dir/$service" "/etc/systemd/system/$service"
+done
 systemctl daemon-reload
-systemctl enable machinist-control-plane.service
-systemctl restart machinist-control-plane.service
-if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate --help >/dev/null 2>&1; then
+
+if [[ $machinist_node_role == all || $machinist_node_role == control-plane ]]; then
+  systemctl enable machinist-control-plane.service
+  systemctl restart machinist-control-plane.service
+else
+  systemctl disable --now machinist-control-plane.service
+fi
+
+if [[ $machinist_node_role == control-plane ]]; then
+  systemctl disable --now machinist-worker.service
+elif runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate --help >/dev/null 2>&1; then
   if runuser -u "$runtime_user" -- env HOME="$runtime_home" machinist worker validate >/dev/null 2>&1; then
     systemctl enable machinist-worker.service
     systemctl restart machinist-worker.service
@@ -124,20 +147,26 @@ else
   fi
 fi
 
-cat <<'EOF'
-
-VM bootstrap complete.
-
+printf '\nVM bootstrap complete.\nNode role: %s\nRelease source: %s\n\n' \
+  "$machinist_node_role" "$machinist_repository"
+if [[ $machinist_node_role == control-plane ]]; then
+  cat <<'EOF'
 Next steps:
-  1. Run `su - machinist`, then complete the remaining login and repository steps as that user.
-  2. Run `gh auth login`.
-  3. Run `codex` once and sign in.
-  4. Run `claude` once and sign in.
-  5. Clone each repository agents may use and register its absolute path in
-     ~/.machinist/worker.toml.
-  6. Exit back to root and run `systemctl enable --now machinist-worker` after registering a repository.
-  7. Check `systemctl status machinist-control-plane machinist-worker`.
-
-Keep the control plane on 127.0.0.1. Reach it from your computer with:
-  ssh -N -L 7331:127.0.0.1:7331 machinist
+  1. Configure ~/.machinist/config.toml as the `machinist` user.
+  2. Keep the listener on 127.0.0.1 and check `systemctl status machinist-control-plane`.
+  3. Reach the dashboard through an authenticated private tunnel:
+     ssh -N -L 7331:127.0.0.1:7331 machinist
 EOF
+else
+  cat <<'EOF'
+Next steps:
+  1. Run `su - machinist`, then authenticate only the harnesses this worker uses.
+  2. Run `gh auth login` when repository workflows use the GitHub CLI.
+  3. Run `codex` and/or `claude` once when their subscription profiles are enabled.
+  4. Clone approved repositories and register their absolute paths in
+     ~/.machinist/worker.toml.
+  5. For a remote control plane, follow docs/fleet-deployment.md before enabling the worker.
+  6. Exit back to root and run `systemctl enable --now machinist-worker`.
+  7. Check `systemctl status machinist-worker` and, when used, the fleet tunnel.
+EOF
+fi

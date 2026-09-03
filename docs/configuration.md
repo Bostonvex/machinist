@@ -109,6 +109,9 @@ preferred workers before enabling unattended routes.
 The selected route and exact profile, harness, provider, authentication mode,
 and role are persisted. Route candidates are profile names only; commands,
 endpoints, credentials, and paths cannot be overridden through the API.
+When an API-key profile runs, environment variables declared as `secret_env` by
+other profiles are removed from that child process. The selected profile's key,
+subscription session, and ordinary repository credentials remain worker-local.
 
 Each execution is a durable attempt with its own ID and lease fence. A failed
 attempt is retried only when its normalized error class appears in `fallback_on`

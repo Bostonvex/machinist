@@ -19,10 +19,11 @@ speed, token, repair, and unattended-completion gates pass.
 
 Machinist is a better foundation because its control-plane/worker boundary is
 small, credentials and repository authority remain on workers, work is durable,
-and any stdin-driven executable can already be used. It is not a complete
-replacement today: routing is executor/model only, a job has one run, Windows
-is unsupported, and its UI does not expose deep agent, cache, GPU, or retry
-telemetry. Those gaps are the scope of this plan.
+and any stdin-driven executable can already be used. The release candidate now
+closes the routing, retry, native Windows, and deep observability gaps described
+below. It is not a complete replacement until a representative paired pilot
+passes the cutover gates; semantic role graphs and production merge/deploy
+policy also remain repository-workflow responsibilities.
 
 ## Release-candidate implementation status
 
@@ -36,7 +37,10 @@ The current branch implements the execution-platform portion of this plan:
 - ordered routes, model aliases, fenced attempts, classified fallback, compact
   retry handoff, remote cancellation, and process-tree termination;
 - a fail-open read-only bridge to the existing agent/token/cache/DGX collector
-  and an Agents & infra dashboard inside the Machinist UI;
+  and an Agents & infra dashboard with distinct, stale-aware DGX and model-node
+  views inside the Machinist UI;
+- role-aware Linux bootstrap and a strict-host-key, loopback-only fleet tunnel
+  service for separating the control plane from remote workers;
 - native macOS, Linux, and Windows amd64/arm64 builds, including Windows Job
   Object cancellation and staged self-update;
 - schema migrations through version 7 with data-preservation coverage.
@@ -195,8 +199,10 @@ Each adapter implements:
 
 The generic adapter preserves current behaviour. Codex and Claude adapters
 preserve subscription-backed CLI sessions. OpenCode and Pi enable DeepSeek and
-local/OpenAI-compatible providers. Provider environment is allow-listed per
-adapter and added only to the child process.
+local/OpenAI-compatible providers. The selected profile's endpoint variable is
+added only to the child process, and API-key variables declared by other
+profiles are removed from its inherited environment. Normal worker environment
+needed by subscription sessions and repository workflows remains available.
 
 ## Attempts, autonomy, and safety
 

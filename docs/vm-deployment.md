@@ -8,6 +8,9 @@ The examples use a local SSH alias named `machinist`. Root performs bootstrap
 and service administration, while coding agents run as a dedicated unprivileged
 `machinist` account.
 
+For a central control plane with remote workers, use the role-aware bootstrap
+below and then follow [Private multi-host fleet deployment](fleet-deployment.md).
+
 ## Understand the four logins
 
 The VM needs separate credentials for separate jobs:
@@ -45,6 +48,23 @@ While connected to the VM, run:
 curl -fsSL https://raw.githubusercontent.com/owainlewis/machinist/v0.2.0/scripts/setup-vm.sh | \
   MACHINIST_VERSION=v0.2.0 bash
 ```
+
+Pin another release repository and install only one role when running a forked
+release or a multi-host fleet:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/VERSION/scripts/setup-vm.sh | \
+  MACHINIST_VERSION=VERSION \
+  MACHINIST_REPOSITORY=OWNER/REPOSITORY \
+  MACHINIST_NODE_ROLE=control-plane \
+  bash
+```
+
+`MACHINIST_NODE_ROLE` accepts `all` (the backward-compatible default),
+`control-plane`, or `worker`. A control-plane-only installation does not install
+coding harnesses. A worker-only installation disables the local control plane
+and leaves the worker disabled until its repository, shared worker token, and
+private control-plane transport validate.
 
 The script installs Git, GitHub CLI, Codex, Claude Code, and the pinned
 Machinist release. It initializes `~/.machinist` without overwriting existing
@@ -256,6 +276,10 @@ The control plane starts during bootstrap. A fresh bootstrap leaves the worker
 disabled until you register a repository and enable it in the previous step.
 The control plane remains bound to `127.0.0.1:7331`, and the worker connects to
 it locally.
+
+The worker unit deliberately has no dependency on a local control-plane unit.
+For a remote fleet, bind it to the supplied tunnel unit with a systemd drop-in
+as documented in [the fleet guide](fleet-deployment.md).
 
 Follow their logs:
 

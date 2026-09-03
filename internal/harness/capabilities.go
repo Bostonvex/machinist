@@ -3,10 +3,13 @@
 package harness
 
 import (
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/environment"
@@ -31,10 +34,10 @@ type Report struct {
 // report. Credential names, values, executable paths, and endpoint URLs are not
 // included in the report.
 func Inspect(worker config.Worker, manifest environment.Manifest) Report {
-	return inspect(worker, manifest, exec.LookPath, os.LookupEnv)
+	return inspect(worker, manifest, exec.LookPath, os.LookupEnv, localEndpointAvailable)
 }
 
-func inspect(worker config.Worker, manifest environment.Manifest, lookPath func(string) (string, error), lookupEnv func(string) (string, bool)) Report {
+func inspect(worker config.Worker, manifest environment.Manifest, lookPath func(string) (string, error), lookupEnv func(string) (string, bool), endpointAvailable func(string) bool) Report {
 	report := Report{
 		Executors: make([]string, 0, len(worker.Executors)+len(worker.Profiles)),
 		Models:    make(map[string][]string),
@@ -60,6 +63,8 @@ func inspect(worker config.Worker, manifest environment.Manifest, lookPath func(
 			capability.Available, capability.Reason = false, "operator tag requirement not met"
 		case profile.AuthMode == "api_key" && !presentEnvironment(profile.SecretEnv, lookupEnv):
 			capability.Available, capability.Reason = false, "credential unavailable"
+		case profile.AuthMode == "local" && profile.BaseURL != "" && !endpointAvailable(profile.BaseURL):
+			capability.Available, capability.Reason = false, "local model endpoint unavailable"
 		case needsPathLookup(profile.Command[0]):
 			if _, err := lookPath(profile.Command[0]); err != nil {
 				capability.Available, capability.Reason = false, "harness executable unavailable"
@@ -75,6 +80,27 @@ func inspect(worker config.Worker, manifest environment.Manifest, lookPath func(
 	}
 	slices.Sort(report.Executors)
 	return report
+}
+
+func localEndpointAvailable(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort(parsed.Hostname(), port), 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
 }
 
 func matches(requirements []string, actual string) bool {

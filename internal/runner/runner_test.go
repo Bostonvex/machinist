@@ -265,6 +265,18 @@ func TestExecuteIgnoresInheritedRepositoryGitEnvironment(t *testing.T) {
 	}
 }
 
+func TestSanitizedEnvironmentDeniesOtherProfileSecrets(t *testing.T) {
+	clean := sanitizedEnvironment([]string{
+		"DEEPSEEK_API_KEY=selected",
+		"ANTHROPIC_API_KEY=other",
+		"GH_TOKEN=repository",
+		"GIT_DIR=/tmp/unsafe",
+	}, "ANTHROPIC_API_KEY")
+	if strings.Join(clean, ",") != "DEEPSEEK_API_KEY=selected,GH_TOKEN=repository" {
+		t.Fatalf("sanitized environment = %#v", clean)
+	}
+}
+
 func TestExecuteFinishesWhenDescendantKeepsOutputPipesOpen(t *testing.T) {
 	started := time.Now()
 	result, err := Execute(context.Background(), Options{

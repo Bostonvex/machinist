@@ -31,26 +31,39 @@ const maxRequestBytes = 1 << 20
 
 const maxObservabilityResponseBytes = 1 << 20
 
+const observabilityRequestTimeout = 5 * time.Second
+
+const observabilitySummaryTimeout = 30 * time.Second
+
+const observabilitySummaryRefresh = time.Minute
+
+const observabilitySummaryRetry = 15 * time.Minute
+
 const workerAvailabilityWindow = 15 * time.Second
 
 //go:embed web/dist/* web/dist/assets/*
 var webAssets embed.FS
 
 type Server struct {
-	store             *Store
-	definitionPath    string
-	triggers          []config.ResolvedTrigger
-	github            githubTriggerClient
-	schedulerEvery    time.Duration
-	now               func() time.Time
-	schedulerError    func(error)
-	shutdownTimeout   time.Duration
-	maxConcurrentJobs int
-	workerToken       string
-	csrfToken         string
-	handler           http.Handler
-	observabilityURL  string
-	observabilityHTTP *http.Client
+	store                          *Store
+	definitionPath                 string
+	triggers                       []config.ResolvedTrigger
+	github                         githubTriggerClient
+	schedulerEvery                 time.Duration
+	now                            func() time.Time
+	schedulerError                 func(error)
+	shutdownTimeout                time.Duration
+	maxConcurrentJobs              int
+	workerToken                    string
+	csrfToken                      string
+	handler                        http.Handler
+	observabilityURL               string
+	observabilityHTTP              *http.Client
+	observabilityMu                sync.Mutex
+	observabilitySummary           json.RawMessage
+	observabilitySummaryAt         time.Time
+	observabilitySummaryAttemptAt  time.Time
+	observabilitySummaryRefreshing bool
 }
 
 type ServerOptions struct {
@@ -115,7 +128,7 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 	observabilityHTTP := options.HTTPClient
 	if observabilityHTTP == nil {
 		observabilityHTTP = &http.Client{
-			Timeout: 3 * time.Second,
+			Timeout: observabilitySummaryTimeout,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return errors.New("observability redirects are disabled")
 			},
@@ -320,7 +333,7 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 		writeJSON(response, http.StatusOK, observabilityResponse{Enabled: false})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(request.Context(), observabilityRequestTimeout)
 	defer cancel()
 	type query struct {
 		name string
@@ -333,7 +346,6 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 	}
 	queries := []query{
 		{name: "health", path: "/healthz"},
-		{name: "summary", path: "/api/v1/summary"},
 		{name: "agents", path: "/api/v1/agents?limit=100"},
 		{name: "turns", path: "/api/v1/turns?limit=100"},
 		{name: "samples", path: "/api/v1/samples?limit=500"},
@@ -345,19 +357,22 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 			results <- result{name: item.name, body: body, err: err}
 		}()
 	}
-	payload := observabilityResponse{Enabled: true, Available: true}
+	payload := observabilityResponse{Enabled: true, Available: true, Summary: s.cachedObservabilitySummary()}
+	partialFailures := 0
 	for range queries {
 		item := <-results
 		if item.err != nil {
-			payload.Available = false
-			payload.Error = "observability collector unavailable or returned invalid data"
+			if item.name == "health" {
+				payload.Available = false
+				payload.Error = "observability collector unavailable or returned invalid data"
+			} else {
+				partialFailures++
+			}
 			continue
 		}
 		switch item.name {
 		case "health":
 			payload.Health = item.body
-		case "summary":
-			payload.Summary = item.body
 		case "agents":
 			payload.Agents = item.body
 		case "turns":
@@ -366,7 +381,41 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 			payload.Samples = item.body
 		}
 	}
+	if payload.Available && partialFailures > 0 {
+		payload.Error = "some observability views timed out; showing available data"
+	}
 	writeJSON(response, http.StatusOK, payload)
+}
+
+// cachedObservabilitySummary keeps the collector's heavier lifetime aggregation
+// off the UI request path. A slow or temporarily failed summary never suppresses
+// healthy agent and infrastructure samples.
+func (s *Server) cachedObservabilitySummary() json.RawMessage {
+	now := time.Now()
+	s.observabilityMu.Lock()
+	cached := slices.Clone(s.observabilitySummary)
+	stale := s.observabilitySummaryAt.IsZero() || now.Sub(s.observabilitySummaryAt) >= observabilitySummaryRefresh
+	retryReady := s.observabilitySummaryAttemptAt.IsZero() || s.observabilitySummaryAttemptAt.Before(s.observabilitySummaryAt) || now.Sub(s.observabilitySummaryAttemptAt) >= observabilitySummaryRetry
+	if stale && retryReady && !s.observabilitySummaryRefreshing {
+		s.observabilitySummaryRefreshing = true
+		s.observabilitySummaryAttemptAt = now
+		go s.refreshObservabilitySummary()
+	}
+	s.observabilityMu.Unlock()
+	return cached
+}
+
+func (s *Server) refreshObservabilitySummary() {
+	ctx, cancel := context.WithTimeout(context.Background(), observabilitySummaryTimeout)
+	defer cancel()
+	body, err := s.fetchObservability(ctx, "/api/v1/summary")
+	s.observabilityMu.Lock()
+	defer s.observabilityMu.Unlock()
+	s.observabilitySummaryRefreshing = false
+	if err == nil {
+		s.observabilitySummary = slices.Clone(body)
+		s.observabilitySummaryAt = time.Now()
+	}
 }
 
 func (s *Server) fetchObservability(ctx context.Context, path string) (json.RawMessage, error) {

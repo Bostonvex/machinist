@@ -34,6 +34,7 @@ func TestInspectFiltersProfilesWithoutExposingSecretNames(t *testing.T) {
 			return "", errors.New("not found")
 		},
 		func(string) (string, bool) { return "", false },
+		func(string) bool { return true },
 	)
 	if len(report.Executors) != 2 || report.Executors[0] != "legacy" || report.Executors[1] != "local" {
 		t.Fatalf("executors = %#v", report.Executors)
@@ -52,11 +53,28 @@ func TestInspectChecksPlatformAndExecutable(t *testing.T) {
 		"missing":      {Harness: "generic", AuthMode: "local", Command: []string{"missing"}},
 	}}
 	manifest := environment.Detect(nil)
-	report := inspect(worker, manifest, func(string) (string, error) { return "", errors.New("not found") }, func(string) (string, bool) { return "", false })
+	report := inspect(worker, manifest, func(string) (string, error) { return "", errors.New("not found") }, func(string) (string, bool) { return "", false }, func(string) bool { return true })
 	if report.Profiles["windows-only"].Reason != "operating system requirement not met" {
 		t.Fatalf("windows profile = %#v", report.Profiles["windows-only"])
 	}
 	if report.Profiles["missing"].Reason != "harness executable unavailable" {
 		t.Fatalf("missing profile = %#v", report.Profiles["missing"])
+	}
+}
+
+func TestInspectDoesNotAdvertiseUnavailableLocalEndpoint(t *testing.T) {
+	worker := config.Worker{Profiles: map[string]config.Profile{
+		"local": {
+			Harness: "codex", Provider: "openai_compatible", AuthMode: "local",
+			BaseURL: "http://127.0.0.1:18000/v1", Command: []string{"codex"},
+		},
+	}}
+	report := inspect(worker, environment.Detect(nil),
+		func(string) (string, error) { return "/usr/bin/codex", nil },
+		func(string) (string, bool) { return "", false },
+		func(rawURL string) bool { return rawURL != "http://127.0.0.1:18000/v1" },
+	)
+	if report.Profiles["local"].Available || report.Profiles["local"].Reason != "local model endpoint unavailable" || len(report.Executors) != 0 {
+		t.Fatalf("report = %#v", report)
 	}
 }

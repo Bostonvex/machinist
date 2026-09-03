@@ -780,17 +780,29 @@ func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
 	}
 	webServer := httptest.NewServer(server.Handler())
 	defer webServer.Close()
-	response, err := http.Get(webServer.URL + "/api/v1/observability")
-	if err != nil {
-		t.Fatal(err)
+	read := func() observabilityResponse {
+		response, err := http.Get(webServer.URL + "/api/v1/observability")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var body observabilityResponse
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
 	}
-	defer response.Body.Close()
-	var body observabilityResponse
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if !body.Enabled || !body.Available || len(body.Health) == 0 || len(body.Summary) == 0 || len(body.Agents) == 0 || len(body.Turns) == 0 || len(body.Samples) == 0 {
+	body := read()
+	if !body.Enabled || !body.Available || len(body.Health) == 0 || len(body.Agents) == 0 || len(body.Turns) == 0 || len(body.Samples) == 0 {
 		t.Fatalf("observability = %#v", body)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(body.Summary) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		body = read()
+	}
+	if len(body.Summary) == 0 {
+		t.Fatal("observability summary did not populate asynchronously")
 	}
 }
 

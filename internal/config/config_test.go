@@ -463,6 +463,21 @@ func TestResolveCommandModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
 	}
 }
 
+func TestResolveCommandModelDeniesSecretsFromOtherProfiles(t *testing.T) {
+	worker := Worker{Profiles: map[string]Profile{
+		"deepseek":  {Harness: "opencode", AuthMode: "api_key", SecretEnv: "DEEPSEEK_API_KEY", Command: []string{"opencode", "run"}},
+		"anthropic": {Harness: "claude", AuthMode: "api_key", SecretEnv: "ANTHROPIC_API_KEY", Command: []string{"claude", "-p"}},
+		"shared":    {Harness: "generic", AuthMode: "api_key", SecretEnv: "DEEPSEEK_API_KEY", Command: []string{"agent"}},
+	}}
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "deepseek"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(resolved.DeniedEnvironment, ",") != "ANTHROPIC_API_KEY" {
+		t.Fatalf("denied environment = %#v", resolved.DeniedEnvironment)
+	}
+}
+
 func TestResolveCommandModelRejectsUnsupportedSelection(t *testing.T) {
 	for name, executor := range map[string]Executor{
 		"missing placeholder": {Command: []string{"agent", "run"}},
