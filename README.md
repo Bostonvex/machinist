@@ -26,7 +26,7 @@ Machinist is an open-source software factory implementation. It runs on your mac
 Please note: this is early access software and subject to change. 
 
 <p align="center">
-  <img src=".github/assets/screenshots/task-analytics.jpg" width="900" alt="Machinist task analytics showing completion time, success rate, reported tokens, and per-run measurements">
+  <img src=".github/assets/screenshots/task-analytics-full.jpg" width="900" alt="Machinist task analytics showing completion time, success rate, reported tokens, and per-run measurements">
 </p>
 
 <p align="center"><sub>Live task analytics from the Mac mini deployment. Values are deployment-specific.</sub></p>
@@ -280,7 +280,7 @@ For persistent services, use the supplied macOS LaunchAgent or Linux systemd
 deployment guides rather than keeping terminals open.
 
 <p align="center">
-  <img src=".github/assets/screenshots/worker-profiles.jpg" width="900" alt="Machinist worker page showing the connected Mac mini, repositories, environment, and available Codex, Claude, and DGX profiles">
+  <img src=".github/assets/screenshots/worker-profiles-full.jpg" width="900" alt="Machinist worker page showing the connected Mac mini, repositories, environment, and available Codex, Claude, and DGX profiles">
 </p>
 
 <p align="center"><sub>A connected macOS worker advertising only its approved repositories and available profiles.</sub></p>
@@ -304,7 +304,7 @@ checkpoints or role handoffs, while Machinist remains responsible for safe
 execution, cancellation, provenance, and budgets.
 
 <p align="center">
-  <img src=".github/assets/screenshots/run-provenance.jpg" width="900" alt="Completed Machinist DGX run showing repository, command, local model, profile, provider, authentication, attempt count, duration, tokens, worker, and exit code">
+  <img src=".github/assets/screenshots/run-provenance-full.jpg" width="900" alt="Completed Machinist DGX run showing repository, command, local model, profile, provider, authentication, attempt count, duration, tokens, worker, and exit code">
 </p>
 
 <p align="center"><sub>A real read-only DGX canary: one local Codex attempt, its exact provider and profile, duration, tokens, and terminal result.</sub></p>
