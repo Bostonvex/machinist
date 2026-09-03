@@ -12,6 +12,8 @@
   <a href="docs/README.md">Documentation</a> ·
   <a href="docs/adaptive-agent-platform.md">Adaptive platform</a> ·
   <a href="docs/configuration.md">Configuration</a> ·
+  <a href="docs/herdr.md">Herdr</a> ·
+  <a href="docs/observability.md">Observability</a> ·
   <a href="examples/workflows/README.md">Workflow examples</a>
 </p>
 
@@ -31,14 +33,14 @@ Please note: this is early access software and subject to change.
 
 <p align="center"><sub>Scalable interface capture using live Mac mini deployment values. Values are deployment-specific.</sub></p>
 
-## Adaptive agent platform release candidate
+## Adaptive agent platform
 
-The Bostonvex `v0.5.0-rc.5` release extends Machinist into an
-environment-aware, multi-harness control plane. A command can select an ordered
-route of worker-local profiles instead of being coupled to one executable or
-model. This keeps prompts, source, credentials, and subscription sessions on
-the execution host while allowing the control plane to schedule and observe the
-work.
+Bostonvex `main` builds on the `v0.5.0-rc.5` release candidate with an
+environment-aware, multi-harness control plane and optional interactive Herdr
+transport. A command can select an ordered route of worker-local profiles
+instead of being coupled to one executable, model, or interaction style. This
+keeps prompts, source, credentials, and subscription sessions on the execution
+host while allowing the control plane to schedule and observe the work.
 
 | Capability | What is available |
 | --- | --- |
@@ -69,6 +71,20 @@ evidence, and adoption criteria.
 - **Keep authority local.** Repositories, credentials, model aliases, and executor configuration stay on the worker.
 - **Inspect every run.** Stream output, retain durable events and artifacts, and track terminal outcomes, duration, and reported token use.
 - **Bound unattended work.** Fixed catalogs, profile routes, environment requirements, retry policy, and budgets constrain scheduled or repository-owned automation.
+
+## Choose how the agent runs
+
+Machinist uses the same job, route, budget, and attempt model for both execution
+styles. Choose per submission; changing the transport does not create a second
+task system.
+
+| Mode | Best for | Operator experience | Worker transport |
+| --- | --- | --- | --- |
+| Headless process | AFK implementation, audits, scheduled work, CI-style tasks | Submit and return later; inspect durable output in Machinist | `process` |
+| Interactive Herdr | Exploratory work, approvals, agent questions, live steering | Watch and edit the real terminal while Machinist tracks the canonical run | `herdr` |
+
+A Herdr job waits for a Herdr worker; it never silently runs headlessly. A
+process job likewise cannot be claimed by the interactive worker.
 
 ## What you can do
 
@@ -207,7 +223,31 @@ Run it directly:
 ./bin/machinist run --command=foreman --repo=/path/to/repo --prompt="Implement issue 42"
 ```
 
-Then visit `http://127.0.0.1:7331` if you start the managed control plane.
+Or start the managed control plane and worker:
+
+```sh
+# Terminal 1: API, durable scheduler, and dashboard.
+./bin/machinist start
+
+# Terminal 2: validates local executables, profiles, and repositories before polling.
+./bin/machinist worker validate
+./bin/machinist worker start
+```
+
+Open `http://127.0.0.1:7331`, select **New run**, then choose either **Headless
+process** or **Interactive Herdr terminal**. The interactive option remains
+queued until the dedicated Herdr session is available.
+
+To enable the editable terminal workflow:
+
+```sh
+herdr plugin link ./plugins/herdr-machinist --enabled
+herdr --session machinist
+```
+
+Inside Herdr, run **Machinist: New interactive workflow**. The plugin starts a
+session-bound `herdr` worker automatically and the new task appears in both the
+Herdr task board and Machinist dashboard.
 
 ## How execution works
 
@@ -371,6 +411,11 @@ The control plane serves a local web UI on the same address as its API:
 | Workers | Which hosts are connected? What OS/architecture, repositories, profiles, and trusted tags do they advertise? |
 | Triggers | Which schedules can create work, and for which fixed command/repository pair? |
 | Commands | Which approved commands, routes, roles, timeouts, and models can be submitted? |
+
+The new-run form selects the execution mode. Interactive attempts show their
+Herdr session, workspace, pane, and agent binding in the attempt timeline, while
+the Workers view shows whether each connected worker accepts `process` or
+`herdr` work.
 
 High-frequency agent and infrastructure telemetry remains in the separate
 collector database. The control plane uses a read-only, fail-open bridge: a slow

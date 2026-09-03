@@ -33,6 +33,29 @@ out), new submissions are rejected while historical jobs remain visible.
 Managed triggers select one command with `command = "audit"`. Model selection remains
 available when the executor command includes `{{machinist.model}}`.
 
+## Triggers
+
+Triggers create bounded managed jobs for a fixed command and repository. Cron
+triggers use a five-field schedule and an explicit IANA timezone:
+
+```toml
+[github.repositories]
+my-project = "owner/my-project"
+
+[triggers.cron.nightly-audit]
+schedule = "0 2 * * *"
+timezone = "America/New_York"
+repository = "my-project"
+command = "audit"
+model = "fast"
+prompt = "Audit request validation and persistence for correctness defects."
+```
+
+Interval triggers replace `schedule` and `timezone` with `every = "6h"`.
+GitHub triggers poll configured repositories for an authorized request label.
+All trigger families resolve the command, model, repository mapping, and prompt
+at startup; they cannot inject a machine-local path or executable.
+
 ## Typed execution profiles
 
 Profiles add harness, provider, authentication, endpoint, and environment

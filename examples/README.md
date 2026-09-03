@@ -3,7 +3,9 @@
 The files at this level are the small default installed by `machinist init`:
 
 - `config.toml` defines the shipped `foreman`, `audit`, and `shepherd` commands.
-- `worker.toml` shows local Codex and Claude Code executors.
+- `worker.toml` shows Codex and Claude Code process executors, their matching
+  Herdr adapters, an environment-aware typed profile, and a registered
+  repository.
 - `prompts/` contains the editable default prompts.
 
 `config.toml` includes a commented cron trigger that schedules Shepherd. Enable it only
@@ -21,3 +23,16 @@ setup and run commands:
 The [GitHub comment intake example](github-actions/README.md) safely turns a new,
 authorized `@machinist` issue comment into a `machinist:requested` label for a
 managed GitHub trigger.
+
+After copying the examples into `~/.machinist`, validate before starting a
+worker:
+
+```sh
+machinist worker validate
+machinist worker start                 # unattended process jobs
+machinist worker start --transport herdr  # only from a Herdr plugin session
+```
+
+For editable terminal work, link the bundled plugin and use its workflow picker
+instead of starting the `herdr` worker manually. See the
+[Herdr guide](../docs/herdr.md).

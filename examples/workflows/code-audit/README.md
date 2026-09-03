@@ -3,8 +3,11 @@
 This example inspects a repository for correctness bugs. It separates discovery from
 verification and opens at most three deduplicated GitHub issues. It never changes code.
 
-Machinist does not schedule jobs yet, so this is a manual run. The prompt is ready to use
-unchanged if scheduled intake is added later.
+The example configuration is ready for a manual direct run. For recurring use,
+register the repository and command with the managed worker, then add a fixed
+cron trigger in the control-plane configuration. The scheduler can create only
+that approved command/repository pair; see the
+[configuration guide](../../../docs/configuration.md#triggers).
 
 ## Set up
 
