@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 620" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="620" viewBox="0 0 1440 620" role="img" aria-labelledby="title desc">
   <title id="title">Machinist worker profiles</title>
   <desc id="desc">Vector capture of a connected Mac mini worker with approved repositories, environment facts, and available subscription and DGX profiles.</desc>
   <style>

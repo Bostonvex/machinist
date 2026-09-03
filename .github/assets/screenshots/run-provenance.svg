@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
   <title id="title">Machinist run provenance</title>
   <desc id="desc">Vector capture of a completed read-only DGX run with repository, command, model, profile, provider, authentication mode, attempt count, duration, tokens, worker, and exit code.</desc>
   <style>

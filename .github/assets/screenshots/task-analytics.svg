@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
   <title id="title">Machinist task analytics</title>
   <desc id="desc">Vector capture of the live task analytics dashboard with duration, success, token coverage, and completed run metrics.</desc>
   <style>
