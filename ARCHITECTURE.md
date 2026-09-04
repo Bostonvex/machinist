@@ -14,6 +14,11 @@ Machinist owns process execution, not orchestration.
 - `internal/review` decides one independent review: it refuses a review whose author
   and reviewer are the same agent or run, parses the reviewer verdict contract, and
   applies protected-path and severity policy. It only makes a verdict stricter.
+- `internal/factoryrun` renders and parses the `FACTORY:RUN` handoff marker that
+  carries one run's evidence across sessions. It reads only the lines after the
+  marker anchor, requires an explicit state on every check, and accepts only the
+  verdicts `internal/review` can produce, so unreadable evidence is an error
+  rather than a passing default.
 
 Each job has exactly one run. The database enforces this with a unique `runs.job_id`.
 Terminal state comes only from the process result. There is no internal stage model.
