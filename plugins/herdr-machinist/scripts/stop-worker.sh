@@ -1,7 +1,13 @@
 #!/bin/sh
 set -eu
 
-state_dir=${HERDR_PLUGIN_STATE_DIR:?HERDR_PLUGIN_STATE_DIR is required}
+plugin_state_dir=${HERDR_PLUGIN_STATE_DIR:?HERDR_PLUGIN_STATE_DIR is required}
+socket_path=${HERDR_SOCKET_PATH:?HERDR_SOCKET_PATH is required}
+session_name=$(basename "$(dirname "$socket_path")")
+case "$session_name" in
+  "" | *[!A-Za-z0-9._-]*) exit 0 ;;
+esac
+state_dir="$plugin_state_dir/sessions/$session_name"
 pid_file="$state_dir/worker.pid"
 if [ ! -f "$pid_file" ]; then
   exit 0
