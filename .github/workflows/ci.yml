@@ -1,9 +1,5 @@
 name: CI
 
-# CI re-arm verification: event-triggered workflow check
-
-# re-arm event-triggered workflows (machinist CI investigation)
-
 on:
   pull_request:
   push:
