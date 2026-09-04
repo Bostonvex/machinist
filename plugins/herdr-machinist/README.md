@@ -14,6 +14,8 @@ history.
   the current persistent Herdr session.
 - A startup hook runs a session-bound interactive worker. It can claim only
   `herdr` jobs; the normal service worker can claim only `process` jobs.
+- Named sessions can be pinned to separate worker configurations, so each
+  session advertises only its intended harness or local model profile.
 
 Agent terminals are ordinary editable Herdr panes. You can type commands,
 answer agent questions, approve work, or continue the conversation. Machinist
@@ -65,7 +67,24 @@ herdr --session machinist
 ```
 
 The startup hook intentionally activates only in the dedicated `machinist`
-session. It leaves a default or unrelated Herdr session untouched.
+session by default. It also activates a named session when
+`~/.machinist/herdr-sessions/<session>.toml` exists. That file is a normal
+worker configuration and should contain only the profile or executor that the
+session is allowed to run. A session without a matching file remains untouched.
+
+For example, provision `claude.toml`, `codex.toml`, and `deepseek.toml`, each
+with a unique worker `name` and `data_directory`, then launch:
+
+```sh
+herdr --session claude
+herdr --session codex
+herdr --session deepseek
+```
+
+The DeepSeek session can use `herdr_agent = "codex"` with a machine-local Codex
+profile pointed at a DGX-hosted Responses API. In that case, Herdr recognizes
+the Codex terminal lifecycle while the model inference is supplied by DeepSeek
+on the DGX.
 
 1. Open Herdr's action menu and choose **Machinist: New interactive workflow**.
 2. Select a command and registered repository.

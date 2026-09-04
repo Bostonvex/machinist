@@ -3,7 +3,20 @@ $ErrorActionPreference = "Stop"
 if (-not $env:HERDR_PLUGIN_STATE_DIR) { throw "HERDR_PLUGIN_STATE_DIR is required" }
 if (-not $env:HERDR_SOCKET_PATH) { throw "HERDR_SOCKET_PATH is required" }
 $sessionName = Split-Path -Leaf (Split-Path -Parent $env:HERDR_SOCKET_PATH)
-if ($sessionName -ne "machinist") { exit 0 }
+
+$workerConfig = $env:MACHINIST_WORKER_CONFIG
+if (-not $workerConfig -and $sessionName -ne "machinist") {
+    if ($sessionName -notmatch '^[A-Za-z0-9._-]+$') { exit 0 }
+    $sessionConfigDirectory = $env:MACHINIST_HERDR_CONFIG_DIR
+    if (-not $sessionConfigDirectory) {
+        $sessionConfigDirectory = Join-Path $HOME ".machinist\herdr-sessions"
+    }
+    $workerConfig = Join-Path $sessionConfigDirectory "$sessionName.toml"
+    if (-not (Test-Path -LiteralPath $workerConfig -PathType Leaf)) { exit 0 }
+}
+if ($workerConfig -and -not (Test-Path -LiteralPath $workerConfig -PathType Leaf)) {
+    throw "Machinist Herdr worker config does not exist: $workerConfig"
+}
 
 $stateDirectory = $env:HERDR_PLUGIN_STATE_DIR
 New-Item -ItemType Directory -Force -Path $stateDirectory | Out-Null
@@ -26,5 +39,7 @@ if (-not $binary) { throw "Machinist is not installed; interactive worker was no
 
 $stdout = Join-Path $stateDirectory "worker.stdout.log"
 $stderr = Join-Path $stateDirectory "worker.stderr.log"
-$process = Start-Process -FilePath $binary -ArgumentList @("worker", "start", "--transport", "herdr") -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+$arguments = @("worker", "start", "--transport", "herdr")
+if ($workerConfig) { $arguments += "--config=$workerConfig" }
+$process = Start-Process -FilePath $binary -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 Set-Content -LiteralPath $pidFile -Value $process.Id

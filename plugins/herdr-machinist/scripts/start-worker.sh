@@ -4,10 +4,25 @@ set -eu
 state_dir=${HERDR_PLUGIN_STATE_DIR:?HERDR_PLUGIN_STATE_DIR is required}
 socket_path=${HERDR_SOCKET_PATH:?HERDR_SOCKET_PATH is required}
 session_name=$(basename "$(dirname "$socket_path")")
-# The default socket lives directly under the Herdr config directory. Machinist
-# intentionally runs one interactive dispatcher, in the dedicated session.
-if [ "$session_name" != "machinist" ]; then
-  exit 0
+
+# The conventional `machinist` session uses the normal worker configuration.
+# Any other named session is enabled only by an explicitly provisioned config
+# with the same name. This lets operators isolate one harness/profile per Herdr
+# namespace without making the plugin active in unrelated sessions.
+worker_config=${MACHINIST_WORKER_CONFIG:-}
+if [ -z "$worker_config" ] && [ "$session_name" != "machinist" ]; then
+  case "$session_name" in
+    "" | *[!A-Za-z0-9._-]*) exit 0 ;;
+  esac
+  session_config_dir=${MACHINIST_HERDR_CONFIG_DIR:-"$HOME/.machinist/herdr-sessions"}
+  worker_config="$session_config_dir/$session_name.toml"
+  if [ ! -f "$worker_config" ]; then
+    exit 0
+  fi
+fi
+if [ -n "$worker_config" ] && [ ! -f "$worker_config" ]; then
+  printf 'Machinist Herdr worker config does not exist: %s\n' "$worker_config" >&2
+  exit 1
 fi
 mkdir -p "$state_dir"
 pid_file="$state_dir/worker.pid"
@@ -31,6 +46,10 @@ else
   exit 127
 fi
 
-nohup "$machinist_bin" worker start --transport herdr >>"$log_file" 2>&1 &
+set -- worker start --transport herdr
+if [ -n "$worker_config" ]; then
+  set -- "$@" --config "$worker_config"
+fi
+nohup "$machinist_bin" "$@" >>"$log_file" 2>&1 &
 worker_pid=$!
 printf '%s\n' "$worker_pid" >"$pid_file"

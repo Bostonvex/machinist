@@ -140,10 +140,36 @@ herdr --session machinist
 ```
 
 The plugin startup hook launches one detached `machinist worker start
---transport herdr` only in the named `machinist` session. The normal macOS or
-systemd service keeps using the default `process` transport. If the plugin is
-linked while the session is already running, invoke **Machinist: Restart
-interactive worker** once.
+--transport herdr` in the conventional `machinist` session using the default
+worker configuration. The normal macOS or systemd service keeps using the
+default `process` transport. If the plugin is linked while the session is
+already running, invoke **Machinist: Restart interactive worker** once.
+
+To isolate harnesses across multiple persistent Herdr namespaces, create one
+normal worker configuration per session at
+`~/.machinist/herdr-sessions/<session>.toml`. A named session with a matching
+file starts a worker from that file; sessions without one remain untouched.
+Keep only the intended profile in each file and give every worker a unique
+`name` and `data_directory`. For example:
+
+```text
+~/.machinist/herdr-sessions/claude.toml   -> claude-subscription only
+~/.machinist/herdr-sessions/codex.toml    -> codex-subscription only
+~/.machinist/herdr-sessions/deepseek.toml -> dgx-codex only
+```
+
+Then launch each namespace in its own terminal window:
+
+```sh
+herdr --session claude
+herdr --session codex
+herdr --session deepseek
+```
+
+Use direct-profile commands in `~/.machinist/config.toml` when a submission
+must target one session deterministically. Set the control plane's
+`max_concurrent_jobs` to at least the number of sessions that should run work
+at the same time.
 
 The plugin has distinct POSIX shell and PowerShell entrypoints. Machinist’s
 normal environment manifest continues to detect `darwin`, `linux`, or `windows`
