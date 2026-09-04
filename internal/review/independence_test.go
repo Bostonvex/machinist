@@ -1,0 +1,49 @@
+package review
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestCheckIndependenceAcceptsSeparateAgents(t *testing.T) {
+	author := Party{Role: RoleImplementer, Agent: "implementer_01", RunID: "run-a"}
+	reviewer := Party{Role: RoleReviewer, Agent: "reviewer_02", RunID: "run-b"}
+	if err := CheckIndependence(author, reviewer); err != nil {
+		t.Fatalf("CheckIndependence: %v", err)
+	}
+}
+
+func TestCheckIndependenceFailsClosed(t *testing.T) {
+	cases := map[string]struct{ author, reviewer Party }{
+		"same agent": {
+			Party{Role: RoleImplementer, Agent: "agent_01", RunID: "run-a"},
+			Party{Role: RoleReviewer, Agent: "Agent_01", RunID: "run-b"},
+		},
+		"same run": {
+			Party{Role: RoleImplementer, Agent: "implementer_01", RunID: "run-a"},
+			Party{Role: RoleReviewer, Agent: "reviewer_02", RunID: "run-a"},
+		},
+		"unknown author": {
+			Party{Role: RoleImplementer, RunID: "run-a"},
+			Party{Role: RoleReviewer, Agent: "reviewer_02", RunID: "run-b"},
+		},
+		"unknown reviewer": {
+			Party{Role: RoleImplementer, Agent: "implementer_01", RunID: "run-a"},
+			Party{Role: RoleReviewer, RunID: "run-b"},
+		},
+		"reviewer is not a reviewer": {
+			Party{Role: RoleImplementer, Agent: "implementer_01", RunID: "run-a"},
+			Party{Role: RoleImplementer, Agent: "implementer_02", RunID: "run-b"},
+		},
+		"author reviewed itself into existence": {
+			Party{Role: RoleReviewer, Agent: "reviewer_01", RunID: "run-a"},
+			Party{Role: RoleReviewer, Agent: "reviewer_02", RunID: "run-b"},
+		},
+	}
+	for name, tc := range cases {
+		err := CheckIndependence(tc.author, tc.reviewer)
+		if !errors.Is(err, ErrNotIndependent) {
+			t.Fatalf("%s: err = %v, want ErrNotIndependent", name, err)
+		}
+	}
+}

@@ -11,6 +11,9 @@ Machinist owns process execution, not orchestration.
 - `internal/controlplane` stores one job and one run, leases it to a capable worker,
   rejects stale completions, and exposes authenticated APIs and the web UI.
 - `internal/managedworker` resolves only worker-owned executor and repository names.
+- `internal/review` decides one independent review: it refuses a review whose author
+  and reviewer are the same agent or run, parses the reviewer verdict contract, and
+  applies protected-path and severity policy. It only makes a verdict stricter.
 
 Each job has exactly one run. The database enforces this with a unique `runs.job_id`.
 Terminal state comes only from the process result. There is no internal stage model.
