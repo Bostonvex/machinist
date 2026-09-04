@@ -31,9 +31,23 @@ const maxRequestBytes = 1 << 20
 
 const maxObservabilityResponseBytes = 1 << 20
 
-const observabilityRequestTimeout = 5 * time.Second
+// Collector endpoints differ in cost by three orders of magnitude: /healthz
+// answers in milliseconds while /api/v1/turns and /api/v1/samples take tens of
+// seconds once the telemetry database is large. Only health stays on the
+// request path. Every other view is refreshed in the background and served
+// from the last good copy, so a slow collector costs freshness, not the screen.
+const observabilityHealthTimeout = 5 * time.Second
 
-const observabilitySummaryTimeout = 30 * time.Second
+const observabilityViewTimeout = 90 * time.Second
+
+const observabilityViewRefresh = 20 * time.Second
+
+const observabilityViewRetry = 2 * time.Minute
+
+// observabilityViewGrace bounds how long one request waits for a view that has
+// never loaded. It applies only before that view's first success, so a fast
+// collector fills the first page load and a slow one does not stall it.
+const observabilityViewGrace = 5 * time.Second
 
 const observabilitySummaryRefresh = time.Minute
 
@@ -45,25 +59,57 @@ const workerAvailabilityWindow = 15 * time.Second
 var webAssets embed.FS
 
 type Server struct {
-	store                          *Store
-	definitionPath                 string
-	triggers                       []config.ResolvedTrigger
-	github                         githubTriggerClient
-	schedulerEvery                 time.Duration
-	now                            func() time.Time
-	schedulerError                 func(error)
-	shutdownTimeout                time.Duration
-	maxConcurrentJobs              int
-	workerToken                    string
-	csrfToken                      string
-	handler                        http.Handler
-	observabilityURL               string
-	observabilityHTTP              *http.Client
-	observabilityMu                sync.Mutex
-	observabilitySummary           json.RawMessage
-	observabilitySummaryAt         time.Time
-	observabilitySummaryAttemptAt  time.Time
-	observabilitySummaryRefreshing bool
+	store              *Store
+	definitionPath     string
+	triggers           []config.ResolvedTrigger
+	github             githubTriggerClient
+	schedulerEvery     time.Duration
+	now                func() time.Time
+	schedulerError     func(error)
+	shutdownTimeout    time.Duration
+	maxConcurrentJobs  int
+	workerToken        string
+	csrfToken          string
+	handler            http.Handler
+	observabilityURL   string
+	observabilityHTTP  *http.Client
+	observabilityMu    sync.Mutex
+	observabilityViews map[string]*observabilityViewState
+	observabilityGrace time.Duration
+	observabilityFetch time.Duration
+}
+
+// observabilityViewState is the last good copy of one collector view together
+// with the bookkeeping that keeps at most one refresh of it in flight.
+type observabilityViewState struct {
+	path      string
+	refresh   time.Duration
+	retry     time.Duration
+	waitFirst bool
+
+	body       json.RawMessage
+	fetchedAt  time.Time
+	attemptAt  time.Time
+	refreshing bool
+	loaded     chan struct{}
+}
+
+func newObservabilityViews() map[string]*observabilityViewState {
+	live := func(path string) *observabilityViewState {
+		return &observabilityViewState{
+			path: path, refresh: observabilityViewRefresh, retry: observabilityViewRetry,
+			waitFirst: true, loaded: make(chan struct{}),
+		}
+	}
+	return map[string]*observabilityViewState{
+		"agents":  live("/api/v1/agents?limit=100"),
+		"turns":   live("/api/v1/turns?limit=100"),
+		"samples": live("/api/v1/samples?limit=500"),
+		"summary": {
+			path: "/api/v1/summary", refresh: observabilitySummaryRefresh,
+			retry: observabilitySummaryRetry, loaded: make(chan struct{}),
+		},
+	}
 }
 
 type ServerOptions struct {
@@ -80,6 +126,7 @@ type observabilityResponse struct {
 	Agents    json.RawMessage `json:"agents,omitempty"`
 	Turns     json.RawMessage `json:"turns,omitempty"`
 	Samples   json.RawMessage `json:"samples,omitempty"`
+	Pending   []string        `json:"pending,omitempty"`
 }
 
 type statusResponse struct {
@@ -130,7 +177,7 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 	observabilityHTTP := options.HTTPClient
 	if observabilityHTTP == nil {
 		observabilityHTTP = &http.Client{
-			Timeout: observabilitySummaryTimeout,
+			Timeout: observabilityViewTimeout,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return errors.New("observability redirects are disabled")
 			},
@@ -162,6 +209,8 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
 		observabilityURL: observabilityURL, observabilityHTTP: observabilityHTTP,
+		observabilityViews: newObservabilityViews(), observabilityGrace: observabilityViewGrace,
+		observabilityFetch: observabilityViewTimeout,
 	}
 	server.handler, err = server.routes()
 	if err != nil {
@@ -336,90 +385,115 @@ func (s *Server) observability(response http.ResponseWriter, request *http.Reque
 		writeJSON(response, http.StatusOK, observabilityResponse{Enabled: false})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), observabilityRequestTimeout)
-	defer cancel()
-	type query struct {
-		name string
-		path string
-	}
-	type result struct {
-		name string
-		body json.RawMessage
-		err  error
-	}
-	queries := []query{
-		{name: "health", path: "/healthz"},
-		{name: "agents", path: "/api/v1/agents?limit=100"},
-		{name: "turns", path: "/api/v1/turns?limit=100"},
-		{name: "samples", path: "/api/v1/samples?limit=500"},
-	}
-	results := make(chan result, len(queries))
-	for _, item := range queries {
-		go func() {
-			body, err := s.fetchObservability(ctx, item.path)
-			results <- result{name: item.name, body: body, err: err}
-		}()
-	}
-	payload := observabilityResponse{Enabled: true, Available: true}
-	partialFailures := 0
-	for range queries {
-		item := <-results
-		if item.err != nil {
-			if item.name == "health" {
-				payload.Available = false
-				payload.Error = "observability collector unavailable or returned invalid data"
-			} else {
-				partialFailures++
-			}
+	healthCtx, cancel := context.WithTimeout(request.Context(), observabilityHealthTimeout)
+	health, healthErr := s.fetchObservability(healthCtx, "/healthz")
+	cancel()
+	payload := observabilityResponse{Enabled: true, Available: healthErr == nil, Health: health}
+	s.refreshObservabilityViews()
+	s.awaitFirstObservabilityViews(request.Context())
+	for _, name := range []string{"agents", "turns", "samples", "summary"} {
+		body, loaded := s.observabilityViewBody(name)
+		if !loaded {
+			payload.Pending = append(payload.Pending, name)
 			continue
 		}
-		switch item.name {
-		case "health":
-			payload.Health = item.body
+		switch name {
 		case "agents":
-			payload.Agents = item.body
+			payload.Agents = body
 		case "turns":
-			payload.Turns = item.body
+			payload.Turns = body
 		case "samples":
-			payload.Samples = item.body
+			payload.Samples = body
+		case "summary":
+			payload.Summary = body
 		}
 	}
-	if payload.Available && partialFailures > 0 {
-		payload.Error = "some observability views timed out; showing available data"
+	switch {
+	case healthErr != nil:
+		payload.Error = "observability collector unavailable or returned invalid data"
+	case len(payload.Pending) > 0:
+		payload.Error = "some observability views are still loading; showing available data"
 	}
-	payload.Summary = s.cachedObservabilitySummary()
 	writeJSON(response, http.StatusOK, payload)
 }
 
-// cachedObservabilitySummary keeps the collector's heavier lifetime aggregation
-// off the UI request path. A slow or temporarily failed summary never suppresses
-// healthy agent and infrastructure samples.
-func (s *Server) cachedObservabilitySummary() json.RawMessage {
+// refreshObservabilityViews starts a background fetch for every view whose copy
+// is stale, keeping at most one fetch per view in flight. A view that failed
+// backs off for its retry interval so a broken collector is not hammered.
+func (s *Server) refreshObservabilityViews() {
 	now := time.Now()
 	s.observabilityMu.Lock()
-	cached := slices.Clone(s.observabilitySummary)
-	stale := s.observabilitySummaryAt.IsZero() || now.Sub(s.observabilitySummaryAt) >= observabilitySummaryRefresh
-	retryReady := s.observabilitySummaryAttemptAt.IsZero() || s.observabilitySummaryAttemptAt.Before(s.observabilitySummaryAt) || now.Sub(s.observabilitySummaryAttemptAt) >= observabilitySummaryRetry
-	if stale && retryReady && !s.observabilitySummaryRefreshing {
-		s.observabilitySummaryRefreshing = true
-		s.observabilitySummaryAttemptAt = now
-		go s.refreshObservabilitySummary()
+	defer s.observabilityMu.Unlock()
+	for _, view := range s.observabilityViews {
+		if view.refreshing {
+			continue
+		}
+		if !view.fetchedAt.IsZero() && now.Sub(view.fetchedAt) < view.refresh {
+			continue
+		}
+		if !view.attemptAt.IsZero() && !view.attemptAt.Before(view.fetchedAt) && now.Sub(view.attemptAt) < view.retry {
+			continue
+		}
+		view.refreshing = true
+		view.attemptAt = now
+		go s.fetchObservabilityView(view)
 	}
-	s.observabilityMu.Unlock()
-	return cached
 }
 
-func (s *Server) refreshObservabilitySummary() {
-	ctx, cancel := context.WithTimeout(context.Background(), observabilitySummaryTimeout)
+func (s *Server) fetchObservabilityView(view *observabilityViewState) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.observabilityFetch)
 	defer cancel()
-	body, err := s.fetchObservability(ctx, "/api/v1/summary")
+	body, err := s.fetchObservability(ctx, view.path)
 	s.observabilityMu.Lock()
 	defer s.observabilityMu.Unlock()
-	s.observabilitySummaryRefreshing = false
-	if err == nil {
-		s.observabilitySummary = slices.Clone(body)
-		s.observabilitySummaryAt = time.Now()
+	view.refreshing = false
+	if err != nil {
+		return
 	}
+	first := view.fetchedAt.IsZero()
+	view.body = slices.Clone(body)
+	view.fetchedAt = time.Now()
+	if first {
+		close(view.loaded)
+	}
+}
+
+// awaitFirstObservabilityViews gives a live view that has never loaded a
+// bounded chance to arrive, so a responsive collector fills the first page
+// load. A view already holding a copy is never waited on again.
+func (s *Server) awaitFirstObservabilityViews(ctx context.Context) {
+	var pending []<-chan struct{}
+	s.observabilityMu.Lock()
+	for _, view := range s.observabilityViews {
+		if view.waitFirst && view.fetchedAt.IsZero() && view.refreshing {
+			pending = append(pending, view.loaded)
+		}
+	}
+	s.observabilityMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	grace := time.NewTimer(s.observabilityGrace)
+	defer grace.Stop()
+	for _, loaded := range pending {
+		select {
+		case <-loaded:
+		case <-grace.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) observabilityViewBody(name string) (json.RawMessage, bool) {
+	s.observabilityMu.Lock()
+	defer s.observabilityMu.Unlock()
+	view := s.observabilityViews[name]
+	if view == nil || view.fetchedAt.IsZero() {
+		return nil, false
+	}
+	return slices.Clone(view.body), true
 }
 
 func (s *Server) fetchObservability(ctx context.Context, path string) (json.RawMessage, error) {
