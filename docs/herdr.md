@@ -163,13 +163,15 @@ Then launch each namespace in its own terminal window:
 ```sh
 herdr --session claude
 herdr --session codex
-herdr --session deepseek
+CODEX_HOME="$HOME/.machinist/codex-dgx" herdr --session deepseek
 ```
 
 Use direct-profile commands in `~/.machinist/config.toml` when a submission
 must target one session deterministically. Set the control plane's
 `max_concurrent_jobs` to at least the number of sessions that should run work
-at the same time.
+at the same time. For a Codex-backed local model, use a minimal session-specific
+`CODEX_HOME` containing the DGX profile file so unrelated global plugins and
+project context do not consume local-model tokens.
 
 The plugin has distinct POSIX shell and PowerShell entrypoints. Machinist’s
 normal environment manifest continues to detect `darwin`, `linux`, or `windows`

@@ -78,13 +78,15 @@ with a unique worker `name` and `data_directory`, then launch:
 ```sh
 herdr --session claude
 herdr --session codex
-herdr --session deepseek
+CODEX_HOME="$HOME/.machinist/codex-dgx" herdr --session deepseek
 ```
 
 The DeepSeek session can use `herdr_agent = "codex"` with a machine-local Codex
 profile pointed at a DGX-hosted Responses API. In that case, Herdr recognizes
 the Codex terminal lifecycle while the model inference is supplied by DeepSeek
-on the DGX.
+on the DGX. A minimal session-specific `CODEX_HOME` prevents the local model
+from loading unrelated global plugins and project context; place the selected
+`dgx-spark.config.toml` profile file in that directory.
 
 1. Open Herdr's action menu and choose **Machinist: New interactive workflow**.
 2. Select a command and registered repository.
