@@ -25,6 +25,13 @@ Port of `factory/roles/*.md`:
 - [escalation](roles/escalation.md)
 - [post-merge-verifier](roles/post-merge-verifier.md)
 
+## Enforcement in code
+
+- [`internal/review`](../../internal/review) implements the reviewer verdict
+  contract from [roles/reviewer.md](roles/reviewer.md), and enforces that the
+  author of a change is never its reviewer. It decides; it does not write to
+  GitHub.
+
 ## Policy and protocol
 
 To be ported in follow-on A1c PRs: `factory/policy/*` and `factory/protocol/*`
