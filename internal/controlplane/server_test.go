@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -794,22 +796,12 @@ func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
 		"/api/v1/turns?limit=100":   `{"turns":[]}`,
 		"/api/v1/samples?limit=500": `{"samples":[]}`,
 	}
-	liveRequests := make(chan struct{}, 4)
-	summaryObservedAfter := make(chan int, 1)
 	collector := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		body, ok := want[request.URL.RequestURI()]
 		if !ok {
 			t.Errorf("unexpected collector request %q", request.URL.RequestURI())
 			http.NotFound(response, request)
 			return
-		}
-		if request.URL.RequestURI() == "/api/v1/summary" {
-			summaryObservedAfter <- len(liveRequests)
-		} else {
-			select {
-			case liveRequests <- struct{}{}:
-			default:
-			}
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(response, body)
@@ -851,8 +843,93 @@ func TestObservabilityProxyAggregatesFixedCollectorEndpoints(t *testing.T) {
 	if len(body.Summary) == 0 {
 		t.Fatal("observability summary did not populate asynchronously")
 	}
-	if count := <-summaryObservedAfter; count != 4 {
-		t.Fatalf("summary started after %d live requests, want 4", count)
+}
+
+// A collector view that is slower than one page load must not empty the screen:
+// the control plane serves the last good copy and refreshes it in the
+// background. Before this, a five second fan-out deadline dropped /api/v1/turns
+// and /api/v1/samples on every request against a large telemetry database, and
+// the observability page rendered with no turns and no samples at all.
+func TestObservabilityServesLastGoodViewsWhileCollectorIsSlow(t *testing.T) {
+	release := make(chan struct{})
+	var slowRequests atomic.Int64
+	collector := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.RequestURI() {
+		case "/healthz":
+			_, _ = io.WriteString(response, `{"status":"ok","events":441710}`)
+		case "/api/v1/agents?limit=100":
+			_, _ = io.WriteString(response, `{"agents":[{"id":"agent-1"}]}`)
+		case "/api/v1/summary":
+			_, _ = io.WriteString(response, `{"fleet":{"active_agents":1}}`)
+		case "/api/v1/turns?limit=100", "/api/v1/samples?limit=500":
+			if slowRequests.Add(1) > 2 {
+				<-request.Context().Done()
+				return
+			}
+			<-release
+			if request.URL.Path == "/api/v1/turns" {
+				_, _ = io.WriteString(response, `{"turns":[{"id":"turn-1"}]}`)
+			} else {
+				_, _ = io.WriteString(response, `{"samples":[{"event_type":"server.sample"}]}`)
+			}
+		default:
+			t.Errorf("unexpected collector request %q", request.URL.RequestURI())
+			http.NotFound(response, request)
+		}
+	}))
+	defer collector.Close()
+	directory := t.TempDir()
+	definitionPath := filepath.Join(directory, "config.toml")
+	if err := os.WriteFile(definitionPath, []byte("[commands.plan]\nexecutor=\"test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t, filepath.Join(directory, "machinist.db"))
+	server, err := NewServerWithOptions(store, definitionPath, "secret", 0, ServerOptions{ObservabilityURL: collector.URL, HTTPClient: collector.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.observabilityGrace = 20 * time.Millisecond
+	server.observabilityFetch = 500 * time.Millisecond
+	webServer := httptest.NewServer(server.Handler())
+	defer webServer.Close()
+	read := func() observabilityResponse {
+		response, err := http.Get(webServer.URL + "/api/v1/observability")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var body observabilityResponse
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	body := read()
+	if !body.Available || len(body.Health) == 0 || len(body.Agents) == 0 {
+		t.Fatalf("fast views were withheld while slow views loaded: %#v", body)
+	}
+	if !slices.Contains(body.Pending, "turns") || !slices.Contains(body.Pending, "samples") {
+		t.Fatalf("slow views were not reported as pending: %#v", body.Pending)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for (len(body.Turns) == 0 || len(body.Samples) == 0) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		body = read()
+	}
+	if len(body.Turns) == 0 || len(body.Samples) == 0 {
+		t.Fatalf("slow views never populated in the background: %#v", body)
+	}
+	// Every later refresh of these views now hangs until its request context
+	// expires. The last good copy must still reach the page.
+	for _, name := range []string{"turns", "samples"} {
+		server.observabilityMu.Lock()
+		server.observabilityViews[name].refresh = 0
+		server.observabilityMu.Unlock()
+	}
+	body = read()
+	if len(body.Turns) == 0 || len(body.Samples) == 0 {
+		t.Fatalf("cached views were dropped once the collector stalled again: %#v", body)
 	}
 }
 
