@@ -1,5 +1,7 @@
 name: CI
 
+# re-arm event-triggered workflows (machinist CI investigation)
+
 on:
   pull_request:
   push:
