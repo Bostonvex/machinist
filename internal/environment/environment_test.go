@@ -47,8 +47,16 @@ func TestValidateRejectsTamperingAndUnsafeValues(t *testing.T) {
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("unsafe tag was accepted")
 	}
+	// Tamper with a field the digest covers, using a value that is still a safe
+	// identifier so the rejection can only come from the digest. The substitute
+	// is chosen against the detected value: hardcoding one OS name makes this a
+	// no-op on that platform, and the test then passes for no reason.
 	manifest = Detect([]string{"trusted"})
-	manifest.OS = "linux"
+	tampered := "linux"
+	if manifest.OS == tampered {
+		tampered = "darwin"
+	}
+	manifest.OS = tampered
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("digest mismatch was accepted")
 	}
