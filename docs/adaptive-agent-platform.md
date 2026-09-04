@@ -1,7 +1,8 @@
 # Adaptive agent platform plan
 
 Status: release candidate implemented; measured pilot started (1/10 minimum
-pairs); production cutover pending
+pairs); production cutover pending. Full consolidation scope and phase/sunset
+gates recorded in [migration-plan.md](migration-plan.md).
 
 This plan evolves Machinist into the default orchestration layer for unattended
 agentic coding while preserving the useful controls from Buzz Workspace and the

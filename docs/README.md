@@ -30,6 +30,8 @@ matches the way you want to work.
 - [Architecture](../ARCHITECTURE.md)
 - [Adaptive agent platform design](adaptive-agent-platform.md)
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
+- [Consolidation migration plan](migration-plan.md) — absorb ASF, buzz-workspace,
+  and buzz-agent-observability into Machinist, then sunset them
 - [DeepCode evaluation](deepcode-evaluation.md) — DGX compatibility, measured
   harness overhead, risks, recommendation, and staged cutover.
 - [Cutover benchmark](../benchmarks/README.md)
