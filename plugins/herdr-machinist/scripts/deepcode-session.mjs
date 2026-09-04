@@ -81,6 +81,8 @@ async function observe(projectRoot) {
   const baseline = fingerprints(projectRoot);
   let sequence = 0;
   let lastSignature = "";
+  let lastUsageSignature = "";
+  let usageFinalized = false;
   let stopping = false;
 
   const report = async (state, entry, message = "") => {
@@ -115,7 +117,10 @@ async function observe(projectRoot) {
   process.on("SIGINT", () => void release().finally(() => process.exit(0)));
   process.on("SIGTERM", () => void release().finally(() => process.exit(0)));
 
-  await report("idle", null);
+  // The observer starts just before DeepCode takes over the pane. Keep the
+  // agent non-idle long enough for the TUI to initialize before orchestration
+  // submits its first prompt.
+  await report("working", null, "Starting DeepCode");
   await runHerdr([
     "pane",
     "report-metadata",
@@ -129,9 +134,20 @@ async function observe(projectRoot) {
     "--token",
     `model=${process.env.DEEPCODE_MODEL?.trim() || "default"}`,
   ]);
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  await report("idle", null);
 
   while (!stopping) {
     const entry = newestChanged(projectRoot, baseline);
+    if (entry && !usageFinalized) {
+      const tokens = totalTokens(entry);
+      const usageSignature = `${entry.id}\0${entry.updateTime || ""}\0${tokens ?? ""}`;
+      if (tokens !== null && usageSignature !== lastUsageSignature && process.env.MACHINIST_TOKEN_USAGE_PATH?.trim()) {
+        fs.writeFileSync(process.env.MACHINIST_TOKEN_USAGE_PATH, String(tokens), { mode: 0o600 });
+        lastUsageSignature = usageSignature;
+      }
+      if (entry.status === "completed") usageFinalized = true;
+    }
     if (!entry) {
       await report("idle", null);
     } else if (entry.status === "pending" || entry.status === "processing") {

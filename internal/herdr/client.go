@@ -67,6 +67,17 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 		err := fmt.Errorf("profile %q does not configure herdr_agent or herdr_command", command.Profile)
 		return failure(started, protocol.TerminalBinding{}, "configure Herdr adapter", err), err
 	}
+	usageFile, err := os.CreateTemp("", "machinist-herdr-usage-*")
+	if err != nil {
+		return failure(started, protocol.TerminalBinding{}, "create Herdr usage file", err), err
+	}
+	usagePath := usageFile.Name()
+	_ = usageFile.Close()
+	defer os.Remove(usagePath)
+	if command.Environment == nil {
+		command.Environment = make(map[string]string)
+	}
+	command.Environment["MACHINIST_TOKEN_USAGE_PATH"] = usagePath
 	environment := sanitizedEnvironment(client.Environment, command.DeniedEnvironment)
 	for key, value := range command.Environment {
 		environment = append(environment, key+"="+value)
@@ -99,6 +110,7 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 	if err := onBinding(binding); err != nil {
 		return failure(started, binding, "record Herdr terminal binding", err), err
 	}
+	waitTarget := binding.AgentName
 	if command.HerdrAgent != "" {
 		startArgs := []string{"agent", "start", binding.AgentName, "--kind", command.HerdrAgent, "--pane", binding.PaneID, "--timeout", "300000"}
 		if len(command.HerdrArgs) > 0 {
@@ -118,21 +130,61 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 		if err := client.call(ctx, environment, &agentResponse{}, "agent", "rename", binding.PaneID, binding.AgentName); err != nil {
 			return failure(started, binding, "name reported Herdr agent", err), err
 		}
+		waitTarget = binding.PaneID
 	}
-	timeout := remainingMillis(ctx, command.Timeout, started)
-	var prompted agentResponse
-	if err := client.call(ctx, environment, &prompted, "agent", "prompt", binding.AgentName, command.Prompt, "--wait", "--timeout", timeout); err != nil {
-		if ctx.Err() != nil {
-			client.Interrupt(binding)
-			err = ctx.Err()
+	var state string
+	if command.HerdrAgent != "" {
+		timeout := remainingMillis(ctx, command.Timeout, started)
+		var prompted agentResponse
+		if err := client.call(ctx, environment, &prompted, "agent", "prompt", binding.AgentName, command.Prompt, "--wait", "--timeout", timeout); err != nil {
+			if ctx.Err() != nil {
+				client.Interrupt(binding)
+				err = ctx.Err()
+			}
+			return failure(started, binding, "run Herdr agent", err), err
 		}
-		return failure(started, binding, "run Herdr agent", err), err
+		state = responseStatus(prompted.Result)
+	} else {
+		if err := client.call(ctx, environment, &agentResponse{}, "pane", "run", binding.PaneID, command.Prompt); err != nil {
+			return failure(started, binding, "prompt reported Herdr agent", err), err
+		}
+		// Ink-based TUIs can accept Herdr's atomic paste before their Enter
+		// handler has settled. Give lifecycle reporting one poll interval, then
+		// send a separate Enter only when the turn has not started.
+		select {
+		case <-ctx.Done():
+			client.Interrupt(binding)
+			return failure(started, binding, "prompt reported Herdr agent", ctx.Err()), ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+		var afterPrompt agentResponse
+		promptState := ""
+		if err := client.call(ctx, environment, &afterPrompt, "agent", "get", binding.PaneID); err == nil {
+			promptState = responseStatus(afterPrompt.Result)
+		}
+		if promptState != "working" && promptState != "blocked" {
+			if err := client.call(ctx, environment, &agentResponse{}, "pane", "send-keys", binding.PaneID, "enter"); err != nil {
+				return failure(started, binding, "submit reported Herdr agent prompt", err), err
+			}
+		}
+		var active agentResponse
+		if err := client.call(ctx, environment, &active, "agent", "wait", binding.PaneID, "--until", "working", "--until", "blocked", "--timeout", "30000"); err != nil {
+			return failure(started, binding, "wait for reported Herdr agent to start", err), err
+		}
+		state = responseStatus(active.Result)
+		if state == "working" {
+			var settled agentResponse
+			timeout := remainingMillis(ctx, command.Timeout, started)
+			if err := client.call(ctx, environment, &settled, "agent", "wait", binding.PaneID, "--until", "idle", "--until", "done", "--until", "blocked", "--timeout", timeout); err != nil {
+				return failure(started, binding, "wait for reported Herdr agent", err), err
+			}
+			state = responseStatus(settled.Result)
+		}
 	}
-	state := responseStatus(prompted.Result)
 	if state == "blocked" {
-		timeout = remainingMillis(ctx, command.Timeout, started)
+		timeout := remainingMillis(ctx, command.Timeout, started)
 		var waited agentResponse
-		if err := client.call(ctx, environment, &waited, "agent", "wait", binding.AgentName, "--until", "idle", "--until", "done", "--timeout", timeout); err != nil {
+		if err := client.call(ctx, environment, &waited, "agent", "wait", waitTarget, "--until", "idle", "--until", "done", "--timeout", timeout); err != nil {
 			if ctx.Err() != nil {
 				client.Interrupt(binding)
 				err = ctx.Err()
@@ -149,13 +201,17 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 		return failure(started, binding, "run Herdr agent", err), err
 	}
 	completed := time.Now().UTC()
-	result, _ := json.Marshal(map[string]any{
+	resultFields := map[string]any{
 		"id": spec.ID, "command": spec.Command, "command_hash": spec.CommandHash,
 		"profile": command.Profile, "harness": command.Harness, "provider": command.Provider,
 		"auth_mode": command.AuthMode, "role": command.Role, "repository": repository,
 		"state": "succeeded", "exit_code": 0, "started_at": started, "completed_at": completed,
 		"duration_millis": completed.Sub(started).Milliseconds(), "transport": "herdr", "terminal": binding,
-	})
+	}
+	if tokenUsage := readTokenUsage(usagePath); tokenUsage != nil {
+		resultFields["token_usage"] = *tokenUsage
+	}
+	result, _ := json.Marshal(resultFields)
 	events := eventJSONL(1, started, "herdr.workspace.created", binding, "") + eventJSONL(2, completed, "herdr.agent.settled", binding, state)
 	return protocol.Completion{State: "succeeded", ExitCode: 0, Result: result, Events: events}, nil
 }
@@ -176,7 +232,7 @@ func (client *Client) waitForReportedAgent(ctx context.Context, environment []st
 			}
 			waitMillis := remainingContextMillis(startup)
 			var waited agentResponse
-			if err := client.call(startup, environment, &waited, "agent", "wait", paneID, "--until", "idle", "--until", "blocked", "--timeout", waitMillis); err != nil {
+			if err := client.call(startup, environment, &waited, "agent", "wait", paneID, "--until", "idle", "--until", "done", "--until", "blocked", "--timeout", waitMillis); err != nil {
 				return err
 			}
 			state = responseStatus(waited.Result)
@@ -219,7 +275,23 @@ func shellCommand(arguments []string) string {
 func (client *Client) Interrupt(binding protocol.TerminalBinding) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = client.call(ctx, client.Environment, nil, "agent", "send-keys", binding.AgentName, "ctrl+c")
+	target := binding.PaneID
+	if target == "" {
+		target = binding.AgentName
+	}
+	_ = client.call(ctx, client.Environment, nil, "agent", "send-keys", target, "ctrl+c")
+}
+
+func readTokenUsage(path string) *int64 {
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) == 0 || len(body) > 64 {
+		return nil
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+	if err != nil || value < 0 {
+		return nil
+	}
+	return &value
 }
 
 func (client *Client) call(ctx context.Context, environment []string, output any, arguments ...string) error {

@@ -28,7 +28,7 @@ printf '%s\n' "$*" >> "$FAKE_HERDR_LOG"
 case "$1 $2" in
   "workspace create") printf '%s\n' '{"result":{"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}' ;;
   "agent start") printf '%s\n' '{"result":{"status":"idle"}}' ;;
-  "agent prompt") printf '%s\n' '{"result":{"agent":{"status":"done"}}}' ;;
+  "agent prompt") printf 4321 > "$MACHINIST_TOKEN_USAGE_PATH"; printf '%s\n' '{"result":{"agent":{"status":"done"}}}' ;;
   *) printf '%s\n' '{"result":{}}' ;;
 esac
 `
@@ -45,6 +45,9 @@ esac
 	}
 	if completion.State != "succeeded" || completion.ExitCode != 0 || bound.Session != "machinist" || bound.WorkspaceID != "w9" || bound.PaneID != "w9:p1" {
 		t.Fatalf("completion=%#v binding=%#v", completion, bound)
+	}
+	if !strings.Contains(string(completion.Result), `"token_usage":4321`) {
+		t.Fatalf("result=%s does not contain Herdr token usage", completion.Result)
 	}
 	calls, err := os.ReadFile(logPath)
 	if err != nil {
@@ -87,7 +90,25 @@ func TestExecuteRunsReportedAgentCommand(t *testing.T) {
 printf '%s\n' "$*" >> "$FAKE_HERDR_LOG"
 case "$1 $2" in
   "workspace create") printf '%s\n' '{"result":{"workspace":{"workspace_id":"w10"},"tab":{"tab_id":"w10:t1"},"root_pane":{"pane_id":"w10:p1"}}}' ;;
-  "agent get") printf '%s\n' '{"result":{"agent":{"state":"idle"}}}' ;;
+  "pane run")
+    case "$*" in
+      *"Implement with DeepCode"*) : > "$FAKE_HERDR_PROMPT_MARKER" ;;
+    esac
+    printf '%s\n' '{"result":{}}'
+    ;;
+  "agent get")
+    if [ -f "$FAKE_HERDR_PROMPT_MARKER" ]; then
+      printf '%s\n' '{"result":{"agent":{"state":"done"}}}'
+    else
+      printf '%s\n' '{"result":{"agent":{"state":"working"}}}'
+    fi
+    ;;
+  "agent wait")
+    case "$*" in
+      *"--until working"*) printf '%s\n' '{"result":{"agent":{"state":"working"}}}' ;;
+      *) printf '%s\n' '{"result":{"agent":{"state":"done"}}}' ;;
+    esac
+    ;;
   "agent prompt") printf '%s\n' '{"result":{"agent":{"state":"idle"}}}' ;;
   *) printf '%s\n' '{"result":{}}' ;;
 esac
@@ -95,7 +116,7 @@ esac
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	client := &Client{Binary: scriptPath, SocketPath: filepath.Join(directory, "sessions", "deepseek", "herdr.sock"), Environment: []string{"PATH=/usr/bin:/bin", "FAKE_HERDR_LOG=" + logPath}}
+	client := &Client{Binary: scriptPath, SocketPath: filepath.Join(directory, "sessions", "deepseek", "herdr.sock"), Environment: []string{"PATH=/usr/bin:/bin", "FAKE_HERDR_LOG=" + logPath, "FAKE_HERDR_PROMPT_MARKER=" + filepath.Join(directory, "prompted")}}
 	spec := protocol.RunSpec{ID: "run_0123456789abcdef01234567", JobID: "job_0123456789abcdef01234567", AttemptID: "attempt_0123456789abcdef01234567", Command: "implement", CommandHash: "hash"}
 	command := config.ResolvedCommand{Name: "implement", Profile: "dgx-deepcode", Harness: "deepcode", HerdrCommand: []string{"run-deepcode-herdr.sh", "--model=ds-0731"}, Prompt: "Implement with DeepCode", Timeout: time.Minute}
 	completion, err := client.Execute(context.Background(), spec, command, directory, func(protocol.TerminalBinding) error { return nil })
@@ -109,7 +130,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"pane run w10:p1 'run-deepcode-herdr.sh' '--model=ds-0731'", "agent get w10:p1", "agent rename w10:p1 machinist_", "agent prompt machinist_", "Implement with DeepCode"} {
+	for _, want := range []string{"pane run w10:p1 'run-deepcode-herdr.sh' '--model=ds-0731'", "agent get w10:p1", "agent wait w10:p1 --until idle --until done --until blocked", "agent rename w10:p1 machinist_", "pane run w10:p1 Implement with DeepCode", "pane send-keys w10:p1 enter", "agent wait w10:p1 --until working --until blocked", "agent wait w10:p1 --until idle --until done --until blocked"} {
 		if !strings.Contains(string(calls), want) {
 			t.Fatalf("calls %q do not contain %q", calls, want)
 		}

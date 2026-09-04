@@ -86,6 +86,7 @@ process.stdout.write("fake completion\\n");
             project.mkdir()
             state_root = root / "state"
             calls = root / "herdr-calls.txt"
+            token_path = root / "tokens"
             fake_herdr = root / "herdr-fake.sh"
             fake_herdr.write_text(
                 '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MACHINIST_TEST_HERDR_CALLS"\n',
@@ -106,6 +107,7 @@ process.stdout.write("fake completion\\n");
                     "HERDR_BIN_PATH": str(fake_herdr),
                     "MACHINIST_DEEPCODE_HOME": str(state_root),
                     "MACHINIST_TEST_HERDR_CALLS": str(calls),
+                    "MACHINIST_TOKEN_USAGE_PATH": str(token_path),
                     "DEEPCODE_MODEL": "ds-test",
                 }
             )
@@ -129,6 +131,7 @@ process.stdout.write("fake completion\\n");
             self.assertIn("--state blocked", body)
             self.assertIn("--agent-session-id session-1", body)
             self.assertIn("pane release-agent w1:p1", body)
+            self.assertEqual(token_path.read_text(encoding="utf-8"), "321")
 
     @staticmethod
     def _write_session(index_path: Path, status: str) -> None:
@@ -142,6 +145,7 @@ process.stdout.write("fake completion\\n");
                             "status": status,
                             "createTime": "2026-01-01T00:00:00Z",
                             "updateTime": f"2026-01-01T00:00:00.{now}Z",
+                            "usage": {"total_tokens": 321},
                         }
                     ]
                 }
