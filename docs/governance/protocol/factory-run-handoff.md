@@ -1,0 +1,111 @@
+# FACTORY:RUN handoff schema
+
+> Ported from `Bostonvex/agent-software-factory/factory/protocol/FACTORY-RUN-HANDOFF.md`.
+> **Adapted, not copied:** ASF's marker is a single HTML comment with
+> space-separated `key=value` attributes. Machinist's is an anchor line followed
+> by `key: value` lines, because that is what
+> [`internal/factoryrun`](../../../internal/factoryrun) renders and parses. Where
+> this document and that package disagree, the package is the contract and this
+> document is the bug.
+
+## Choice and rationale
+
+**Schema on GitHub, not channel prose.** The marker is compact and machine-read;
+it replaces the free-text `RUN:` / `DISPATCHED:` / `APPLIED:` / `NEXT:` block ASF
+retired after measuring roughly 2% emission. A "required" prompt section that is
+emitted 2% of the time teaches agents that required sections are optional.
+
+**System of record:** GitHub issue comments (the run marker), pull request
+comments (evidence, verdict records), and pull request bodies. Not a second
+blackboard, and not a `RUNS/` directory.
+
+## Run marker
+
+Write it on the **issue** when a run starts or its state materially changes:
+claim, branch, pull request, stage, park. Search for an existing marker before
+starting a second implementation ([factory-start.md](factory-start.md)
+idempotency).
+
+```text
+<!-- machinist:FACTORY:RUN -->
+repo: Bostonvex/machinist
+job: job-1
+run: run-1
+attempt: attempt-1
+branch: codex/example
+pr: 23
+verdict: ready-for-human-review
+issues: #4
+check: Linux checks:success:https://github.com/...
+check: macOS checks:success
+updated_at: 2026-09-04T12:00:00Z
+```
+
+### Fields
+
+| Key | Required | Meaning |
+|-----|----------|---------|
+| `repo` | yes | `owner/name` the run acts in |
+| `job` | yes | Machinist job id |
+| `run` | yes | Machinist run id |
+| `attempt` | when known | Attempt id |
+| `branch` | when known | Task branch name |
+| `pr` | when known | Pull request number |
+| `verdict` | when reviewed | One of the three review verdicts, below |
+| `issues` | optional | Comma-separated issue references |
+| `check` | repeatable | `name:state[:details-url]` |
+| `updated_at` | optional | RFC 3339, UTC |
+
+### The parts that fail closed
+
+These are not stylistic. Evidence is read back by a later session to decide what
+already happened, so a field that cannot be read must be an error, never a
+permissive default.
+
+- **Only the anchor carries evidence.** Parsing starts at
+  `<!-- machinist:FACTORY:RUN -->` and reads the lines after it. A comment that
+  merely mentions `FACTORY:RUN` in prose is not evidence.
+- **A check has no default state.** `check: Linux checks` with no state is a
+  parse error, not a passing check. States are `success`, `failure`, `pending`,
+  `neutral`; anything else is rejected. Evidence carrying no checks at all is not
+  evidence that checks passed.
+- **`verdict` is the review contract, not a free string.** It is
+  `ready-for-human-review`, `changes-requested`, or `escalate` — the three
+  [`internal/review`](../../../internal/review) can produce — or absent, meaning
+  the run has not been reviewed yet. The writer cannot record a verdict the
+  review engine would reject, and specifically cannot record an approval the
+  engine can never produce.
+- **Republishing unchanged evidence writes nothing**, so a retried handoff does
+  not churn the issue.
+
+## Role return payloads
+
+Analysis and worker roles return structured blocks to the orchestrator; the
+orchestrator mirrors the load-bearing fields into the issue marker. Channel text
+stays conclusion plus pointer, with the full evidence on the pull request.
+
+| Role | Return shape | Contract |
+|------|--------------|----------|
+| intake | `VERDICT:` / `RISK:` | [roles/intake.md](../roles/intake.md) |
+| planner | `PLAN_SUMMARY:` / `STEPS:` | [roles/planner.md](../roles/planner.md) |
+| implementer | branch, PR, validation evidence | [roles/implementer.md](../roles/implementer.md) |
+| reviewer | `VERDICT:` / `FINDINGS:` | [roles/reviewer.md](../roles/reviewer.md) |
+| ci-investigator | root cause, fix summary, re-run | [roles/ci-investigator.md](../roles/ci-investigator.md) |
+| gatekeeper | `MERGE:` / `RESULT:` | [roles/gatekeeper.md](../roles/gatekeeper.md) |
+| post-merge-verifier | `VERDICT:` / `FOLLOW_UPS:` | [roles/post-merge-verifier.md](../roles/post-merge-verifier.md) |
+
+These are real contracts with observable emission — review verdicts and merge
+records. They are not the retired channel scroll block.
+
+## Retired — do not reintroduce
+
+```text
+RUN: <issue> <branch> <pr|none> <state>
+DISPATCHED: <role> → <holder>
+APPLIED: …
+ESCALATED: …
+NEXT: …
+```
+
+Dispatch in channel with a short table or bullets; persist state with the marker
+on the issue.
