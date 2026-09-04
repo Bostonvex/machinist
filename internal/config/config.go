@@ -69,30 +69,33 @@ type ControlPlane struct {
 }
 
 type Executor struct {
-	Command    []string          `toml:"command"`
-	Models     map[string]string `toml:"models"`
-	HerdrAgent string            `toml:"herdr_agent"`
-	HerdrArgs  []string          `toml:"herdr_args"`
+	Command      []string          `toml:"command"`
+	Models       map[string]string `toml:"models"`
+	HerdrAgent   string            `toml:"herdr_agent"`
+	HerdrArgs    []string          `toml:"herdr_args"`
+	HerdrCommand []string          `toml:"herdr_command"`
 }
 
 // Profile describes one typed, worker-local harness/provider combination.
 // SecretEnv is an environment variable name only; its value is never loaded
 // into configuration or sent to the control plane.
 type Profile struct {
-	Harness           string            `toml:"harness"`
-	Provider          string            `toml:"provider"`
-	AuthMode          string            `toml:"auth_mode"`
-	SecretEnv         string            `toml:"secret_env"`
-	BaseURL           string            `toml:"base_url"`
-	BaseURLEnv        string            `toml:"base_url_env"`
-	AllowInsecureHTTP bool              `toml:"allow_insecure_http"`
-	Command           []string          `toml:"command"`
-	HerdrAgent        string            `toml:"herdr_agent"`
-	HerdrArgs         []string          `toml:"herdr_args"`
-	Models            map[string]string `toml:"models"`
-	RequiresOS        []string          `toml:"requires_os"`
-	RequiresArch      []string          `toml:"requires_arch"`
-	RequiresTags      []string          `toml:"requires_tags"`
+	Harness             string            `toml:"harness"`
+	Provider            string            `toml:"provider"`
+	AuthMode            string            `toml:"auth_mode"`
+	SecretEnv           string            `toml:"secret_env"`
+	BaseURL             string            `toml:"base_url"`
+	BaseURLEnv          string            `toml:"base_url_env"`
+	AllowInsecureHTTP   bool              `toml:"allow_insecure_http"`
+	Command             []string          `toml:"command"`
+	HerdrAgent          string            `toml:"herdr_agent"`
+	HerdrArgs           []string          `toml:"herdr_args"`
+	HerdrCommand        []string          `toml:"herdr_command"`
+	Models              map[string]string `toml:"models"`
+	RequiresExecutables []string          `toml:"requires_executables"`
+	RequiresOS          []string          `toml:"requires_os"`
+	RequiresArch        []string          `toml:"requires_arch"`
+	RequiresTags        []string          `toml:"requires_tags"`
 }
 
 func (e Executor) supportsModel() bool {
@@ -215,6 +218,7 @@ type ResolvedCommand struct {
 	Command           []string
 	HerdrAgent        string
 	HerdrArgs         []string
+	HerdrCommand      []string
 	Model             string
 	Prompt            string
 	Timeout           time.Duration
@@ -335,6 +339,7 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 	if ok {
 		command.HerdrAgent = strings.ToLower(strings.TrimSpace(executor.HerdrAgent))
 		command.HerdrArgs = renderModelArguments(executor.HerdrArgs, requestedModel, executor.Models)
+		command.HerdrCommand = renderModelArguments(executor.HerdrCommand, requestedModel, executor.Models)
 	}
 	if !ok {
 		profile, profileOK := w.Profiles[command.Executor]
@@ -350,6 +355,7 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 		command.DeniedEnvironment = w.otherProfileSecrets(command.Executor, profile.SecretEnv)
 		command.HerdrAgent = profile.HerdrAgent
 		command.HerdrArgs = renderModelArguments(profile.HerdrArgs, requestedModel, profile.Models)
+		command.HerdrCommand = renderModelArguments(profile.HerdrCommand, requestedModel, profile.Models)
 	}
 	if err := validateCommand(command.Executor, executor.Command); err != nil {
 		return ResolvedCommand{}, err
@@ -784,7 +790,7 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		if len(executor.Models) > 0 && !executor.supportsModel() {
 			return Worker{}, fmt.Errorf("executor %q defines models but its command does not contain %s", name, modelParameter)
 		}
-		if err := validateHerdrAdapter(name, executor.HerdrAgent, executor.HerdrArgs, executor.Models); err != nil {
+		if err := validateHerdrAdapter(name, executor.HerdrAgent, executor.HerdrArgs, executor.HerdrCommand, executor.Models); err != nil {
 			return Worker{}, err
 		}
 		executor.HerdrAgent = strings.ToLower(strings.TrimSpace(executor.HerdrAgent))
@@ -800,6 +806,7 @@ func applyWorkerDefaultsWithHostname(worker Worker, getHostname func() (string, 
 		profile.SecretEnv = strings.TrimSpace(profile.SecretEnv)
 		profile.BaseURLEnv = strings.TrimSpace(profile.BaseURLEnv)
 		profile.HerdrAgent = strings.ToLower(strings.TrimSpace(profile.HerdrAgent))
+		profile.RequiresExecutables = normaliseExecutables(profile.RequiresExecutables)
 		profile.RequiresOS = normaliseEnvironmentTags(profile.RequiresOS)
 		profile.RequiresArch = normaliseEnvironmentTags(profile.RequiresArch)
 		profile.RequiresTags = normaliseEnvironmentTags(profile.RequiresTags)
@@ -872,11 +879,19 @@ func validateProfile(name string, profile Profile) error {
 	if len(profile.Models) > 0 && !(Executor{Command: profile.Command}).supportsModel() {
 		return fmt.Errorf("profile %q defines models but its command does not contain %s", name, modelParameter)
 	}
-	if err := validateHerdrAdapter(name, profile.HerdrAgent, profile.HerdrArgs, profile.Models); err != nil {
+	if err := validateHerdrAdapter(name, profile.HerdrAgent, profile.HerdrArgs, profile.HerdrCommand, profile.Models); err != nil {
 		return err
 	}
 	if err := validateProfileEndpoint(name, profile); err != nil {
 		return err
+	}
+	if len(profile.RequiresExecutables) > 32 {
+		return fmt.Errorf("profile %q requires_executables cannot exceed 32 items", name)
+	}
+	for _, executable := range profile.RequiresExecutables {
+		if strings.TrimSpace(executable) == "" || len(executable) > 512 || strings.ContainsAny(executable, "\x00\r\n") {
+			return fmt.Errorf("profile %q requires_executables value %q is invalid", name, executable)
+		}
 	}
 	for field, values := range map[string][]string{"requires_os": profile.RequiresOS, "requires_arch": profile.RequiresArch, "requires_tags": profile.RequiresTags} {
 		normalised := normaliseEnvironmentTags(values)
@@ -892,8 +907,11 @@ func validateProfile(name string, profile Profile) error {
 	return nil
 }
 
-func validateHerdrAdapter(name, agent string, arguments []string, models map[string]string) error {
+func validateHerdrAdapter(name, agent string, arguments, command []string, models map[string]string) error {
 	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent != "" && len(command) > 0 {
+		return fmt.Errorf("execution %q must configure only one of herdr_agent or herdr_command", name)
+	}
 	if agent != "" {
 		if len(agent) > 64 || !safeEnvironmentTag(agent) {
 			return fmt.Errorf("execution %q herdr_agent is invalid", name)
@@ -911,6 +929,17 @@ func validateHerdrAdapter(name, agent string, arguments []string, models map[str
 		}
 	} else if len(arguments) > 0 {
 		return fmt.Errorf("execution %q herdr_args require herdr_agent", name)
+	}
+	for _, argument := range command {
+		if strings.ContainsAny(argument, "\x00\r\n") {
+			return fmt.Errorf("execution %q herdr_command contains an invalid argument", name)
+		}
+		if strings.Contains(argument, machinistParameterPrefix) && !strings.Contains(argument, modelParameter) {
+			return fmt.Errorf("execution %q herdr_command uses an unsupported Machinist parameter", name)
+		}
+	}
+	if len(command) == 0 && command != nil {
+		return fmt.Errorf("execution %q herdr_command must not be empty", name)
 	}
 	return nil
 }
@@ -974,6 +1003,20 @@ func normaliseEnvironmentTags(tags []string) []string {
 		if tag != "" && !seen[tag] {
 			seen[tag] = true
 			result = append(result, tag)
+		}
+	}
+	slices.Sort(result)
+	return result
+}
+
+func normaliseExecutables(executables []string) []string {
+	result := make([]string, 0, len(executables))
+	seen := make(map[string]bool, len(executables))
+	for _, executable := range executables {
+		executable = strings.TrimSpace(executable)
+		if executable != "" && !seen[executable] {
+			seen[executable] = true
+			result = append(result, executable)
 		}
 	}
 	slices.Sort(result)

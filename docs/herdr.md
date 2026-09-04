@@ -79,33 +79,60 @@ Subscription mode uses the CLI’s existing signed-in session in both modes; it
 does not convert the run to metered API usage. The harness executable must be
 available to the Herdr server’s environment.
 
-### DGX Spark local model through Codex
+### DGX Spark local model through DeepCode
 
 The Mac mini remains the coding worker. A verified tunnel exposes the DGX model
 server on loopback; the agent receives repository access on the Mac, not on the
 DGX.
 
 ```toml
-[profiles.dgx-codex]
-harness = "codex"
+[profiles.dgx-deepcode]
+harness = "deepcode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
-base_url_env = "DGX_SPARK_BASE_URL"
-command = ["codex", "exec", "--ephemeral", "--json", "--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
-herdr_agent = "codex"
-herdr_args = ["--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access"]
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
 models = { local = "ds-0731" }
+requires_executables = ["deepcode", "node"]
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
 requires_tags = ["mac-mini", "dgx-client"]
 ```
 
 The base URL and Machinist metadata are injected into the Herdr workspace. The
-profile is advertised only when the operating system, architecture, tags,
-executable, and endpoint checks pass.
+process wrapper adapts Machinist's standard-input prompt to DeepCode's
+`--exec --prompt` interface and records DeepCode's persisted token total. The
+interactive wrapper starts the real DeepCode TUI plus a lifecycle observer that
+reports `idle`, `working`, and `blocked` states to Herdr. The observer reads
+DeepCode's local session index; it never reads or copies conversation content.
 
-### DeepSeek and other harnesses
+For trusted unattended work, keep provider details in the worker profile and
+put only behavior policy in `~/.deepcode/settings.json`:
+
+```json
+{
+  "contextWindow": "1M",
+  "autoCompactWindow": "512K",
+  "thinkingEnabled": false,
+  "telemetryEnabled": false,
+  "permissions": {
+    "deny": ["write-out-cwd", "delete-out-cwd"],
+    "defaultMode": "allowAll"
+  }
+}
+```
+
+This permits ordinary reads, edits, tests, package downloads, and Git work in
+the approved checkout without waiting for an operator, while failing closed on
+writes and deletes outside it. Use a stricter project-level policy for
+untrusted repositories. DeepCode's permission classification is application
+policy rather than an operating-system sandbox, so retain Machinist's approved
+repository boundary and use the official DeepSeek Harness as a sandboxed
+fallback when stronger process isolation is required.
+
+### Remote DeepSeek and other harnesses
 
 DeepSeek can be a provider behind OpenCode, or a first-class custom harness.
 The first form also gives Herdr native agent detection:
@@ -126,9 +153,9 @@ models = { reasoner = "deepseek/deepseek-reasoner", chat = "deepseek/deepseek-ch
 session. Machinist advertises only the variable name; it never stores or sends
 the secret through the control plane.
 
-Any bounded Machinist harness identifier still works in process mode. Interactive
-mode additionally requires a `herdr_agent` kind supported by the installed
-Herdr version, because Herdr must recognize lifecycle and blocked states.
+Any bounded Machinist harness identifier still works in process mode.
+Interactive mode requires either a `herdr_agent` kind supported by the
+installed Herdr version or a `herdr_command` that reports lifecycle state.
 
 ## Install and operate
 
@@ -155,7 +182,7 @@ Keep only the intended profile in each file and give every worker a unique
 ```text
 ~/.machinist/herdr-sessions/claude.toml   -> claude-subscription only
 ~/.machinist/herdr-sessions/codex.toml    -> codex-subscription only
-~/.machinist/herdr-sessions/deepseek.toml -> dgx-codex only
+~/.machinist/herdr-sessions/deepseek.toml -> dgx-deepcode only
 ```
 
 Then launch each namespace in its own terminal window:
@@ -163,21 +190,22 @@ Then launch each namespace in its own terminal window:
 ```sh
 herdr --session claude
 herdr --session codex
-CODEX_HOME="$HOME/.machinist/codex-dgx" herdr --session deepseek
+herdr --session deepseek
 ```
 
 Use direct-profile commands in `~/.machinist/config.toml` when a submission
 must target one session deterministically. Set the control plane's
 `max_concurrent_jobs` to at least the number of sessions that should run work
-at the same time. For a Codex-backed local model, use a minimal session-specific
-`CODEX_HOME` containing the DGX profile file so unrelated global plugins and
-project context do not consume local-model tokens.
+at the same time. DeepCode persists per-project sessions under `~/.deepcode`;
+the adapter uses those status and usage fields for Herdr and Machinist but keeps
+the message content local to the Mac mini.
 
 The plugin has distinct POSIX shell and PowerShell entrypoints. Machinist’s
 normal environment manifest continues to detect `darwin`, `linux`, or `windows`
 and `arm64` or `amd64`, while profile `requires_*` fields decide which adapters
-the host advertises. Herdr’s Windows support is currently preview; use the
-Windows action names ending in “Windows” on that platform.
+the host advertises. DeepCode requires Node.js 22 or newer and uses Git Bash on
+Windows. Herdr’s Windows support is currently preview; use the Windows action
+names ending in “Windows” and the `.ps1` DeepCode wrappers on that platform.
 
 ## Failure and recovery behavior
 

@@ -12,7 +12,7 @@ worker_token_file = "~/.machinist/server/worker.token"
 # Routes choose the first compatible, available worker-local profile. A command
 # uses exactly one of executor, profile, or route.
 # [routes.implementation]
-# profiles = ["dgx-local", "codex-subscription", "deepseek"]
+# profiles = ["dgx-deepcode", "codex-subscription", "deepseek"]
 # max_attempts = 3
 # max_total_tokens = 150000
 # fallback_on = ["capacity", "rate_limit", "transient"]
@@ -36,7 +36,7 @@ timeout = "60m"
 # Offline cutover replay. Register only a disposable checkout and use a
 # worker-local profile with no external mutation authority.
 # [commands.shadow-replay]
-# profile = "dgx-local"
+# profile = "dgx-deepcode"
 # role = "pilot"
 # prompt_file = "prompts/shadow-replay.md"
 # timeout = "45m"

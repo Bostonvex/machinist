@@ -139,22 +139,24 @@ command = ["opencode", "run", "--model={{machinist.model}}"]
 [profiles.deepseek.models]
 reasoner = "deepseek/deepseek-reasoner"
 
-[profiles.dgx-local]
-harness = "opencode"
+[profiles.dgx-deepcode]
+harness = "deepcode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:8000/v1"
-command = ["opencode", "run", "--model={{machinist.model}}"]
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+requires_executables = ["deepcode", "node"]
 requires_tags = ["dgx-spark"]
-[profiles.dgx-local.models]
-coder = "openai/local-coder"
+[profiles.dgx-deepcode.models]
+coder = "local-coder"
 ```
 
 Portable routes belong to the control-plane configuration:
 
 ```toml
 [routes.implementation]
-profiles = ["dgx-local", "codex-subscription", "deepseek"]
+profiles = ["dgx-deepcode", "codex-subscription", "deepseek"]
 max_attempts = 3
 max_total_tokens = 150000
 fallback_on = ["capacity", "rate_limit", "transient", "model_unavailable"]

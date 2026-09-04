@@ -8,7 +8,7 @@ SSH, while harness subscriptions and repository credentials remain on the Mac.
 For a two-Spark Ray/vLLM cluster, the shape is:
 
 ```text
-Mac: Machinist control plane + worker + dashboard + Codex/other harnesses
+Mac: Machinist control plane + worker + dashboard + DeepCode/other harnesses
   127.0.0.1:7331  Machinist UI/API
   127.0.0.1:7900  Buzz observability collector
   127.0.0.1:18000 --verified SSH--> Spark head 127.0.0.1:8000
@@ -16,12 +16,10 @@ Mac: Machinist control plane + worker + dashboard + Codex/other harnesses
                                          +-- Ray worker on second Spark
 ```
 
-The Spark head must expose an OpenAI-compatible Responses API. Confirm the model
-ID through `GET /v1/models` and a bounded test request before configuring an
-agent harness. The shipped Codex profile follows the official
-[Codex configuration reference](https://developers.openai.com/codex/config-reference/):
-custom providers use a machine-local `base_url`, and `responses` is the
-supported custom-provider wire protocol.
+The Spark head must expose an OpenAI-compatible Chat Completions API; keeping
+the Responses API enabled also preserves Codex as an optional fallback. Confirm
+the model ID through `GET /v1/models` and bounded requests before configuring a
+harness.
 
 ## 1. Verify prerequisites
 
@@ -30,6 +28,8 @@ Run as the interactive macOS user, never root:
 ```sh
 uname -sm
 command -v codex
+command -v node
+node --version
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes <SPARK_HEAD_ALIAS> true
 curl -fsS http://<SPARK_HEAD_PRIVATE_ADDRESS>:8000/v1/models
 ```
@@ -69,26 +69,36 @@ checksums. The script:
 - installs the bounded second-node NVIDIA adapter under
   `~/.local/libexec/machinist`.
 
-## 3. Add the local Codex provider
+## 3. Install and configure DeepCode
 
-Copy `deploy/macos/dgx-spark.config.toml` to
-`~/.codex/dgx-spark.config.toml`. Keep it machine-local. It selects the tunneled
-Responses API without an API key and uses `--ephemeral` execution when invoked
-by the worker. Change the model ID and context window only after querying the
-live server.
+DeepCode requires Node.js 22 or newer. Pin the tested package version on the
+Mac mini:
+
+```sh
+npm install --global @vegamo/deepcode-cli@0.3.1
+deepcode --version
+```
+
+Keep endpoint and model selection in the worker profile. Put only local
+behavior policy in `~/.deepcode/settings.json`; the recommended trusted-worker
+policy is shown in the [Herdr guide](herdr.md#dgx-spark-local-model-through-deepcode).
 
 Verify the tunnel and harness without allowing writes:
 
 ```sh
 curl -fsS http://127.0.0.1:18000/v1/models
-printf '%s\n' 'Respond with exactly LOCAL_OK and do not call tools.' | \
-  codex exec --ephemeral --json --sandbox read-only \
-  --profile dgx-spark --model ds-0731 -
+DEEPCODE_BASE_URL=http://127.0.0.1:18000/v1 \
+DEEPCODE_API_KEY=local \
+DEEPCODE_MODEL=ds-0731 \
+DEEPCODE_THINKING_ENABLED=false \
+DEEPCODE_TELEMETRY_ENABLED=0 \
+deepcode --exec --prompt 'Respond with exactly LOCAL_OK and do not call tools.'
 ```
 
-Codex may warn when a private model is absent from its catalog, but it must
-complete the Responses API call and report usage. Treat a missing final message
-or usage record as a failed compatibility test.
+The command must print `LOCAL_OK` and leave a completed session with usage in
+`~/.deepcode/projects/*/sessions-index.json`. Treat a missing final message or
+usage record as a failed compatibility test. The optional
+`deploy/macos/dgx-spark.config.toml` remains available for a Codex fallback.
 
 ## 4. Configure Machinist routing
 
@@ -108,30 +118,16 @@ token_file = "~/.config/buzz-agent-observability/ingest-token"
 identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
 endpoint_id = "mac-mini"
 
-[profiles.dgx-codex]
-harness = "codex"
+[profiles.dgx-deepcode]
+harness = "deepcode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
-base_url_env = "DGX_SPARK_BASE_URL"
-command = ["codex", "exec", "--ephemeral", "--json", "--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access", "-"]
-herdr_agent = "codex"
-herdr_args = ["--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "danger-full-access"]
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
 models = { local = "ds-0731" }
-requires_os = ["darwin"]
-requires_arch = ["arm64"]
-requires_tags = ["mac-mini", "dgx-client"]
-
-[profiles.dgx-codex-readonly]
-harness = "codex"
-provider = "openai_compatible"
-auth_mode = "local"
-base_url = "http://127.0.0.1:18000/v1"
-base_url_env = "DGX_SPARK_BASE_URL"
-command = ["codex", "exec", "--ephemeral", "--json", "--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "read-only", "-"]
-herdr_agent = "codex"
-herdr_args = ["--profile", "dgx-spark", "--model={{machinist.model}}", "--sandbox", "read-only"]
-models = { local = "ds-0731" }
+requires_executables = ["deepcode", "node"]
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
 requires_tags = ["mac-mini", "dgx-client"]
@@ -155,7 +151,7 @@ enabled = true
 url = "http://127.0.0.1:7900"
 
 [routes.implementation]
-profiles = ["dgx-codex", "codex-subscription"]
+profiles = ["dgx-deepcode", "codex-subscription"]
 max_attempts = 2
 max_total_tokens = 200000
 fallback_on = ["capacity", "rate_limit", "transient", "model_unavailable", "harness_crash", "timeout"]
@@ -167,13 +163,13 @@ prompt_file = "prompts/foreman.md"
 timeout = "120m"
 
 [commands.local-check]
-profile = "dgx-codex-readonly"
+profile = "dgx-deepcode"
 role = "diagnostic"
 timeout = "5m"
 ```
 
 The worker checks a configured local endpoint before every poll. When the SSH
-tunnel is down, it does not advertise `dgx-codex`, so new work selects the next
+tunnel is down, it does not advertise `dgx-deepcode`, so new work selects the next
 route without consuming an attempt. Existing legacy executors remain available.
 
 ## 5. Add both Spark GPUs to observability

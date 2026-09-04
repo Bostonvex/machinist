@@ -1,6 +1,6 @@
 id = "bostonvex.machinist"
 name = "Machinist"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
 description = "Launch, watch, and interact with canonical Machinist workflows from Herdr."
 platforms = ["linux", "macos", "windows"]

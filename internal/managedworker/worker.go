@@ -170,18 +170,21 @@ func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 		for _, name := range capabilities.Executors {
 			profile, profileOK := w.config.Profiles[name]
 			executor, executorOK := w.config.Executors[name]
-			if (profileOK && strings.TrimSpace(profile.HerdrAgent) != "") || (executorOK && strings.TrimSpace(executor.HerdrAgent) != "") {
+			if (profileOK && hasHerdrAdapter(profile.HerdrAgent, profile.HerdrCommand)) || (executorOK && hasHerdrAdapter(executor.HerdrAgent, executor.HerdrCommand)) {
 				interactiveExecutors = append(interactiveExecutors, name)
 			}
 		}
 		capabilities.Executors = interactiveExecutors
 		for name := range capabilities.Models {
-			if strings.TrimSpace(w.config.Profiles[name].HerdrAgent) == "" && strings.TrimSpace(w.config.Executors[name].HerdrAgent) == "" {
+			profile := w.config.Profiles[name]
+			executor := w.config.Executors[name]
+			if !hasHerdrAdapter(profile.HerdrAgent, profile.HerdrCommand) && !hasHerdrAdapter(executor.HerdrAgent, executor.HerdrCommand) {
 				delete(capabilities.Models, name)
 			}
 		}
 		for name := range capabilities.Profiles {
-			if strings.TrimSpace(w.config.Profiles[name].HerdrAgent) == "" {
+			profile := w.config.Profiles[name]
+			if !hasHerdrAdapter(profile.HerdrAgent, profile.HerdrCommand) {
 				delete(capabilities.Profiles, name)
 			}
 		}
@@ -201,6 +204,10 @@ func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 		return nil, err
 	}
 	return response.Run, nil
+}
+
+func hasHerdrAdapter(agent string, command []string) bool {
+	return strings.TrimSpace(agent) != "" || len(command) > 0
 }
 
 func profileCapabilities(configured map[string]harness.Capability) map[string]protocol.ProfileCapability {

@@ -27,7 +27,8 @@ keystrokes or copies the terminal transcript into the job database.
 - Herdr 0.8.0 or newer.
 - A running Machinist control plane.
 - `~/.machinist/worker.toml` with at least one approved repository and one
-  executor or profile that defines `herdr_agent` and `herdr_args`.
+  executor or profile that defines either `herdr_agent`/`herdr_args` or a
+  self-reporting `herdr_command`.
 - The corresponding agent CLI available to the Herdr server environment.
 
 For example, a Codex subscription profile can use the existing signed-in CLI
@@ -44,9 +45,10 @@ herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
 models = { deep = "gpt-5.6-sol", fast = "gpt-5.6-luna" }
 ```
 
-The process `command` and interactive `herdr_args` are deliberately separate:
-each harness can use its native headless and terminal invocation without shell
-wrappers.
+The process and interactive launch adapters are deliberately separate: each
+harness can use its native headless and terminal invocation. DeepCode needs a
+thin wrapper only because its headless prompt is an argument while Machinist
+delivers prompts over standard input.
 
 ## Install
 
@@ -78,15 +80,44 @@ with a unique worker `name` and `data_directory`, then launch:
 ```sh
 herdr --session claude
 herdr --session codex
-CODEX_HOME="$HOME/.machinist/codex-dgx" herdr --session deepseek
+herdr --session deepseek
 ```
 
-The DeepSeek session can use `herdr_agent = "codex"` with a machine-local Codex
-profile pointed at a DGX-hosted Responses API. In that case, Herdr recognizes
-the Codex terminal lifecycle while the model inference is supplied by DeepSeek
-on the DGX. A minimal session-specific `CODEX_HOME` prevents the local model
-from loading unrelated global plugins and project context; place the selected
-`dgx-spark.config.toml` profile file in that directory.
+The DeepSeek session uses
+[`lessweb/deepcode-cli`](https://github.com/lessweb/deepcode-cli), a dedicated
+DeepSeek coding harness, not Codex. DeepCode 0.3.1 provides both an interactive
+TUI and `--exec` mode and accepts an OpenAI-compatible local endpoint. Install
+and pin it on the Mac mini:
+
+```sh
+npm install --global @vegamo/deepcode-cli@0.3.1
+deepcode --version
+```
+
+Configure the worker with the repository's process and Herdr wrappers:
+
+```toml
+[profiles.dgx-deepcode]
+harness = "deepcode"
+provider = "openai_compatible"
+auth_mode = "local"
+base_url = "http://127.0.0.1:18000/v1"
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
+models = { local = "ds-0731" }
+requires_executables = ["deepcode", "node"]
+requires_os = ["darwin"]
+requires_arch = ["arm64"]
+requires_tags = ["mac-mini", "dgx-client"]
+```
+
+The wrappers do not implement a coding agent. They translate prompt transport,
+copy DeepCode's reported token total into Machinist's run record, and map
+DeepCode's persisted `processing`, `ask_permission`, `waiting_for_user`, and
+settled states to Herdr. Set `DEEPCODE_TELEMETRY_ENABLED=0` for a local-only
+deployment. The `local` API key used by the wrapper is a non-secret
+compatibility value for the unauthenticated loopback endpoint.
 
 1. Open Herdr's action menu and choose **Machinist: New interactive workflow**.
 2. Select a command and registered repository.
@@ -137,10 +168,11 @@ its pane to the current run or overwrite the current result.
 
 ## Harnesses and platforms
 
-Herdr starts the configured native agent kind. Machinist currently documents
-Codex, Claude Code, and OpenCode/DeepSeek examples, while the adapter fields are
-configurable for additional Herdr-supported agents. Subscription sessions,
-API-key providers, and local/DGX model endpoints remain worker-local.
+Herdr starts a configured native agent kind or a self-reporting command.
+Machinist currently documents Codex, Claude Code, and DeepCode/DeepSeek
+examples, while the adapter fields remain configurable for additional agents.
+Subscription sessions, API-key providers, and local/DGX model endpoints remain
+worker-local.
 
 The manifest supplies POSIX entrypoints for macOS/Linux and PowerShell
 entrypoints for Windows. Machinist's normal environment requirements still
@@ -152,12 +184,13 @@ executable set, and endpoint health.
 - **Job remains queued:** open `herdr --session machinist`, then confirm the
   Workers page shows a connected worker with the `herdr` transport.
 - **Profile is missing:** run `machinist worker validate`; confirm the profile
-  has both `herdr_agent` and `herdr_args` and passes its environment checks.
+  has a native `herdr_agent` or a self-reporting `herdr_command` and passes its
+  environment checks.
 - **Plugin linked after Herdr was already running:** choose **Machinist: Restart
   interactive worker** once.
 - **Agent CLI is not found:** ensure the executable is on the PATH inherited by
   the Herdr server, not only an unrelated login shell.
 
-See the full [Herdr integration guide](../../docs/herdr.md) for DGX-local
-profiles, DeepSeek/OpenCode, lifecycle behavior, security boundaries, and
-platform-specific operation.
+See the full [Herdr integration guide](../../docs/herdr.md) for the DeepCode DGX
+profile, lifecycle behavior, security boundaries, and platform-specific
+operation.

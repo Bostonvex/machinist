@@ -30,6 +30,27 @@ func TestExecutorRendersSeparateHerdrAdapter(t *testing.T) {
 	}
 }
 
+func TestExecutorRendersReportedHerdrCommand(t *testing.T) {
+	worker, err := applyWorkerDefaultsWithHostname(Worker{
+		DataDirectory: t.TempDir(),
+		Executors: map[string]Executor{"dsh": {
+			Command:      []string{"dsh-headless", "--model={{machinist.model}}"},
+			Models:       map[string]string{"local": "ds-0731"},
+			HerdrCommand: []string{"dsh-tui", "--model={{machinist.model}}"},
+		}},
+	}, func() (string, error) { return "test-host", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Name: "implement", Executor: "dsh"}, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.HerdrAgent != "" || strings.Join(resolved.HerdrCommand, " ") != "dsh-tui --model=ds-0731" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+}
+
 func TestLoadWorkerResolvesRelativePathsFromConfig(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "worker.toml")
@@ -328,6 +349,12 @@ harness="generic"
 auth_mode="local"
 command=["agent"]
 `, "both an executor and a profile"},
+		"invalid required executable": {`[profiles.test]
+harness="deepcode"
+auth_mode="local"
+command=["agent"]
+requires_executables=["deepcode\nbad"]
+`, "requires_executables"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "worker.toml")

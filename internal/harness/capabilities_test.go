@@ -78,3 +78,25 @@ func TestInspectDoesNotAdvertiseUnavailableLocalEndpoint(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestInspectChecksWrapperAndRequiredExecutables(t *testing.T) {
+	worker := config.Worker{Profiles: map[string]config.Profile{
+		"deepcode": {
+			Harness: "deepcode", AuthMode: "local", Command: []string{"/opt/machinist/run-deepcode.sh"},
+			RequiresExecutables: []string{"deepcode", "node"},
+		},
+	}}
+	report := inspect(worker, environment.Detect(nil),
+		func(name string) (string, error) {
+			if name == "node" || name == "/opt/machinist/run-deepcode.sh" {
+				return name, nil
+			}
+			return "", errors.New("not found")
+		},
+		func(string) (string, bool) { return "", false },
+		func(string) bool { return true },
+	)
+	if report.Profiles["deepcode"].Available || report.Profiles["deepcode"].Reason != "harness executable unavailable" {
+		t.Fatalf("report = %#v", report)
+	}
+}

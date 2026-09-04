@@ -55,16 +55,16 @@ herdr_args = ["--model={{machinist.model}}", "--dangerously-skip-permissions"]
 # herdr_agent = "opencode"
 # herdr_args = ["--model={{machinist.model}}"]
 #
-# [profiles.dgx-local]
-# harness = "opencode"
+# [profiles.dgx-deepcode]
+# harness = "deepcode"
 # provider = "openai_compatible"
 # auth_mode = "local"
 # base_url = "http://127.0.0.1:8000/v1"
-# base_url_env = "OPENAI_BASE_URL"
-# command = ["opencode", "run", "--model={{machinist.model}}"]
-# models = { coder = "openai/local-coder" }
-# herdr_agent = "opencode"
-# herdr_args = ["--model={{machinist.model}}"]
+# base_url_env = "DEEPCODE_BASE_URL"
+# command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+# herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
+# models = { coder = "local-coder" }
+# requires_executables = ["deepcode", "node"]
 # requires_tags = ["dgx-spark"]
 
 # Register each repository that managed workers may run in.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,9 +63,9 @@ func NewFromEnvironment() (*Client, error) {
 
 func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, command config.ResolvedCommand, repository string, onBinding func(protocol.TerminalBinding) error) (protocol.Completion, error) {
 	started := time.Now().UTC()
-	if strings.TrimSpace(command.HerdrAgent) == "" {
-		err := fmt.Errorf("profile %q does not configure herdr_agent", command.Profile)
-		return failure(started, protocol.TerminalBinding{}, "configure Herdr agent", err), err
+	if strings.TrimSpace(command.HerdrAgent) == "" && len(command.HerdrCommand) == 0 {
+		err := fmt.Errorf("profile %q does not configure herdr_agent or herdr_command", command.Profile)
+		return failure(started, protocol.TerminalBinding{}, "configure Herdr adapter", err), err
 	}
 	environment := sanitizedEnvironment(client.Environment, command.DeniedEnvironment)
 	for key, value := range command.Environment {
@@ -98,13 +99,25 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 	if err := onBinding(binding); err != nil {
 		return failure(started, binding, "record Herdr terminal binding", err), err
 	}
-	startArgs := []string{"agent", "start", binding.AgentName, "--kind", command.HerdrAgent, "--pane", binding.PaneID, "--timeout", "300000"}
-	if len(command.HerdrArgs) > 0 {
-		startArgs = append(startArgs, "--")
-		startArgs = append(startArgs, command.HerdrArgs...)
-	}
-	if err := client.call(ctx, environment, &agentResponse{}, startArgs...); err != nil {
-		return failure(started, binding, "start Herdr agent", err), err
+	if command.HerdrAgent != "" {
+		startArgs := []string{"agent", "start", binding.AgentName, "--kind", command.HerdrAgent, "--pane", binding.PaneID, "--timeout", "300000"}
+		if len(command.HerdrArgs) > 0 {
+			startArgs = append(startArgs, "--")
+			startArgs = append(startArgs, command.HerdrArgs...)
+		}
+		if err := client.call(ctx, environment, &agentResponse{}, startArgs...); err != nil {
+			return failure(started, binding, "start Herdr agent", err), err
+		}
+	} else {
+		if err := client.call(ctx, environment, &agentResponse{}, "pane", "run", binding.PaneID, shellCommand(command.HerdrCommand)); err != nil {
+			return failure(started, binding, "start Herdr process", err), err
+		}
+		if err := client.waitForReportedAgent(ctx, environment, binding.PaneID, 5*time.Minute); err != nil {
+			return failure(started, binding, "detect reported Herdr agent", err), err
+		}
+		if err := client.call(ctx, environment, &agentResponse{}, "agent", "rename", binding.PaneID, binding.AgentName); err != nil {
+			return failure(started, binding, "name reported Herdr agent", err), err
+		}
 	}
 	timeout := remainingMillis(ctx, command.Timeout, started)
 	var prompted agentResponse
@@ -145,6 +158,62 @@ func (client *Client) Execute(ctx context.Context, spec protocol.RunSpec, comman
 	})
 	events := eventJSONL(1, started, "herdr.workspace.created", binding, "") + eventJSONL(2, completed, "herdr.agent.settled", binding, state)
 	return protocol.Completion{State: "succeeded", ExitCode: 0, Result: result, Events: events}, nil
+}
+
+func (client *Client) waitForReportedAgent(ctx context.Context, environment []string, paneID string, timeout time.Duration) error {
+	startup, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		var response agentResponse
+		err := client.call(startup, environment, &response, "agent", "get", paneID)
+		if err == nil {
+			state := responseStatus(response.Result)
+			if state == "idle" || state == "done" {
+				return nil
+			}
+			if state == "blocked" {
+				return errors.New("reported agent is blocked during startup")
+			}
+			waitMillis := remainingContextMillis(startup)
+			var waited agentResponse
+			if err := client.call(startup, environment, &waited, "agent", "wait", paneID, "--until", "idle", "--until", "blocked", "--timeout", waitMillis); err != nil {
+				return err
+			}
+			state = responseStatus(waited.Result)
+			if state == "idle" || state == "done" {
+				return nil
+			}
+			return fmt.Errorf("reported agent settled in %q during startup", state)
+		}
+		select {
+		case <-startup.Done():
+			return fmt.Errorf("wait for reported agent in pane %q: %w", paneID, startup.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func remainingContextMillis(ctx context.Context) string {
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < time.Second {
+			remaining = time.Second
+		}
+		return strconv.FormatInt(remaining.Milliseconds(), 10)
+	}
+	return "300000"
+}
+
+func shellCommand(arguments []string) string {
+	quoted := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		if runtime.GOOS == "windows" {
+			quoted = append(quoted, "'"+strings.ReplaceAll(argument, "'", "''")+"'")
+		} else {
+			quoted = append(quoted, "'"+strings.ReplaceAll(argument, "'", "'\\''")+"'")
+		}
+	}
+	return strings.Join(quoted, " ")
 }
 
 func (client *Client) Interrupt(binding protocol.TerminalBinding) {

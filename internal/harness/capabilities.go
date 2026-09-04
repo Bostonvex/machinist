@@ -65,10 +65,8 @@ func inspect(worker config.Worker, manifest environment.Manifest, lookPath func(
 			capability.Available, capability.Reason = false, "credential unavailable"
 		case profile.AuthMode == "local" && profile.BaseURL != "" && !endpointAvailable(profile.BaseURL):
 			capability.Available, capability.Reason = false, "local model endpoint unavailable"
-		case needsPathLookup(profile.Command[0]):
-			if _, err := lookPath(profile.Command[0]); err != nil {
-				capability.Available, capability.Reason = false, "harness executable unavailable"
-			}
+		case unavailableExecutable(append([]string{profile.Command[0]}, profile.RequiresExecutables...), lookPath):
+			capability.Available, capability.Reason = false, "harness executable unavailable"
 		}
 		report.Profiles[name] = capability
 		if capability.Available {
@@ -125,8 +123,13 @@ func presentEnvironment(name string, lookupEnv func(string) (string, bool)) bool
 	return ok && strings.TrimSpace(value) != ""
 }
 
-func needsPathLookup(executable string) bool {
-	return !strings.ContainsAny(executable, `/\`)
+func unavailableExecutable(executables []string, lookPath func(string) (string, error)) bool {
+	for _, executable := range executables {
+		if _, err := lookPath(executable); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedKeys(values map[string]string) []string {

@@ -85,44 +85,43 @@ herdr_agent = "opencode"
 herdr_args = ["--model={{machinist.model}}"]
 models = { reasoner = "deepseek/deepseek-reasoner" }
 
-[profiles.dgx-local]
-harness = "opencode"
+[profiles.dgx-deepcode]
+harness = "deepcode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:8000/v1"
-base_url_env = "OPENAI_BASE_URL"
-command = ["opencode", "run", "--model={{machinist.model}}"]
-herdr_agent = "opencode"
-herdr_args = ["--model={{machinist.model}}"]
-models = { coder = "openai/local-coder" }
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
+models = { coder = "local-coder" }
+requires_executables = ["deepcode", "node"]
 requires_tags = ["dgx-spark"]
 ```
 
-Built-in harness identifiers are `codex`, `claude`, `opencode`, `pi`, and
-`generic`, but `harness` accepts any bounded portable identifier. This lets a
-worker register a `deepseek`, `aider`, or organization-specific harness without
-a Machinist release; `command` remains the complete argument-array adapter.
-DeepSeek is normally a provider used through OpenCode or Pi, but a real
-DeepSeek-specific CLI can therefore advertise `harness = "deepseek"` directly.
+Common harness identifiers are `codex`, `claude`, `deepcode`, `opencode`, `pi`,
+and `generic`, but `harness` accepts any bounded portable identifier. This lets
+a worker register Aider or an organization-specific harness without a
+Machinist release; `command` remains the complete argument-array adapter.
 Automatic structured-output normalization is used only when Machinist safely
 recognizes the command shape. `subscription` profiles use the harness's existing
 signed-in session; API profiles name a secret environment variable but never
 send its value to the control plane. A non-loopback HTTP endpoint is rejected
 unless `allow_insecure_http = true` is explicitly set.
 
-Profile requirements may use `requires_os`, `requires_arch`, and
-`requires_tags`. Operating system and architecture are detected. Tags are
-operator assertions and are the only environment facts that may grant trust.
-Workers advertise unavailable profiles with a redacted reason but do not accept
-work for them.
+Profile requirements may use `requires_os`, `requires_arch`,
+`requires_executables`, and `requires_tags`. Operating system, architecture,
+the command adapter, and every required executable are checked locally. Tags
+are operator assertions and are the only environment facts that may grant
+trust. Workers advertise unavailable profiles with a redacted reason but do
+not accept work for them.
 
-`command` is the non-interactive process adapter. `herdr_agent` and
-`herdr_args` are the separate interactive adapter for the same logical profile.
-The model alias is resolved once and inserted into both argument arrays. A
-Herdr worker advertises only profiles and executors that define `herdr_agent`;
-this prevents an interactive job from being claimed by a profile that can only
-run headlessly. Herdr agent kinds are validated again by the installed Herdr
-binary when the interactive pane starts.
+`command` is the non-interactive process adapter. The same logical profile may
+define either native `herdr_agent`/`herdr_args` or a self-reporting
+`herdr_command` as its interactive adapter. The model alias is resolved once
+and inserted into both argument arrays. A Herdr worker advertises only profiles
+with one of those interactive adapters; this prevents an interactive job from
+being claimed by a headless-only profile. Native Herdr agent kinds are
+validated again by the installed Herdr binary when the pane starts.
 
 ## Ordered routes
 
@@ -130,7 +129,7 @@ Routes make a command portable across subscription, API, and local inference:
 
 ```toml
 [routes.implementation]
-profiles = ["dgx-local", "codex-subscription", "deepseek"]
+profiles = ["dgx-deepcode", "codex-subscription", "deepseek"]
 max_attempts = 3
 max_total_tokens = 150000
 fallback_on = ["capacity", "rate_limit", "transient"]
@@ -143,7 +142,7 @@ timeout = "90m"
 
 The control plane chooses the first compatible candidate across workers that
 have advertised the repository within the last 15 seconds and are not already
-running a job. For example, an idle connected `dgx-local` worker prevents an
+running a job. For example, an idle connected `dgx-deepcode` worker prevents an
 API-only worker from taking the same routed job. If the local worker is busy or
 no longer connected, the next compatible profile can claim it. A worker that
 has not yet advertised itself cannot be considered, so start persistent

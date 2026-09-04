@@ -44,7 +44,7 @@ host while allowing the control plane to schedule and observe the work.
 
 | Capability | What is available |
 | --- | --- |
-| Harness and model routing | Per-command and per-role profiles for Codex, Claude Code, OpenCode, Pi, generic executables, and bounded custom identifiers such as DeepSeek or Aider |
+| Harness and model routing | Per-command and per-role profiles for Codex, Claude Code, DeepCode, OpenCode, Pi, generic executables, and bounded custom identifiers |
 | Cost and authentication | Subscription-backed CLIs, API-key providers, and local inference can be ordered in the same route; secret values never enter the control-plane catalog |
 | Local and DGX models | OpenAI-compatible and CLI-mediated local endpoints, including a Mac control plane using one or more DGX Sparks as dedicated inference servers |
 | Environment awareness | Automatic OS, architecture, execution mode, shell, path-style, and feature discovery, plus operator-controlled trust tags and compatibility admission |
@@ -218,7 +218,7 @@ on the worker.
 
 ```text
 implementation route
-  1. dgx-local           local inference, no per-token API charge
+  1. dgx-deepcode        local DeepSeek harness, no per-token API charge
   2. codex-subscription  existing signed-in Codex CLI session
   3. deepseek-api        worker-local DEEPSEEK_API_KEY
 ```
@@ -242,7 +242,7 @@ herdr --session machinist
 
 The picker submits the same canonical Machinist job the dashboard uses. An
 interactive worker inside Herdr creates a workspace at the approved repository,
-starts the configured Codex, Claude, OpenCode/DeepSeek, or other supported
+starts the configured Codex, Claude, DeepCode/DeepSeek, or other supported
 harness, and sends the prompt through Herdr’s agent API. You can watch the real
 terminal, answer a question, approve work, edit commands, or continue the agent
 conversation. Machinist retains the job, route, attempts, budgets, and exact
@@ -250,7 +250,7 @@ session/workspace/pane/agent binding; it does not record raw keystrokes.
 
 #### Example: implement an issue with a local model and stay available to steer
 
-Suppose `implement` uses the ordered route `dgx-codex → codex-subscription`.
+Suppose `implement` uses the ordered route `dgx-deepcode → codex-subscription`.
 Open the plugin action, choose the approved `machinist` repository, select the
 `local` model alias, and paste the acceptance-focused task. The picker submits
 one canonical job with `execution_mode=herdr`; it does not start an untracked
@@ -263,7 +263,7 @@ shell command.
 <p align="center"><sub>Illustrative vector walkthrough of the shipped terminal picker. Exact Herdr chrome may vary by version.</sub></p>
 
 Machinist leases the attempt to the session-bound worker, creates the workspace
-at the registered repository, starts the configured Codex adapter, and records
+at the registered repository, starts the configured DeepCode adapter, and records
 the terminal binding. If the agent asks whether to apply a migration, you answer
 in the same pane while the worker keeps the lease alive. The adjacent task board
 and web dashboard continue to show the same job and attempt.
@@ -356,16 +356,16 @@ token_file = "~/.machinist/server/worker.token"
 detect = true
 tags = ["mac-mini", "dgx-client", "trusted"]
 
-[profiles.dgx-local]
-harness = "codex"
+[profiles.dgx-deepcode]
+harness = "deepcode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
-base_url_env = "OPENAI_BASE_URL"
-command = ["codex", "exec", "--ephemeral", "--json", "--model={{machinist.model}}", "-"]
-herdr_agent = "codex"
-herdr_args = ["--model={{machinist.model}}", "--sandbox", "danger-full-access"]
+base_url_env = "DEEPCODE_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
+herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
 models = { coder = "ds-0731" }
+requires_executables = ["deepcode", "node"]
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
 requires_tags = ["mac-mini", "dgx-client"]
@@ -393,10 +393,13 @@ models = { coder = "deepseek/deepseek-reasoner" }
 path = "/absolute/path/to/my-project"
 ```
 
-`harness` also accepts bounded custom identifiers, so a real DeepSeek-specific
-CLI, Aider, or an organization-owned adapter can be registered without changing
-Machinist. The command remains an argument array; it is never evaluated through
-a shell.
+DeepCode is the dedicated harness for the local DeepSeek model. Its thin
+adapters translate prompt transport, token metrics, and Herdr lifecycle; the
+coding loop and tools remain upstream DeepCode. `harness` also accepts bounded
+custom identifiers, so Aider or an organization-owned adapter can be registered
+without changing Machinist. The headless `command` remains an argument array
+and is never evaluated through a shell. Machinist safely quotes the configured
+`herdr_command` array before submitting it to the interactive pane's shell.
 
 ### 2. Define the ordered route
 
@@ -409,7 +412,7 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 
 [routes.implementation]
-profiles = ["dgx-local", "codex-subscription", "deepseek-api"]
+profiles = ["dgx-deepcode", "codex-subscription", "deepseek-api"]
 max_attempts = 3
 max_total_tokens = 200000
 fallback_on = ["capacity", "rate_limit", "transient", "model_unavailable", "harness_crash", "timeout"]
@@ -452,7 +455,7 @@ deployment guides rather than keeping terminals open.
 
 Suppose the route above encounters local capacity pressure:
 
-1. `dgx-local` starts attempt 1 and reports `capacity`.
+1. `dgx-deepcode` starts attempt 1 and reports `capacity`.
 2. Machinist preserves its output and usage, then verifies that `capacity` is in
    `fallback_on` and that the aggregate budget remains provable.
 3. `codex-subscription` starts attempt 2 with a compact failure-class handoff,
@@ -535,6 +538,7 @@ profile admission rules.
 | [Documentation](docs/README.md) | Choose the right setup and operations guide |
 | [Adaptive platform](docs/adaptive-agent-platform.md) | Architecture, multi-harness roadmap, safety model, dashboard, and cutover plan |
 | [Buzz/ASF comparison](docs/buzz-asf-comparison.md) | Side-by-side feature matrix, tradeoffs, and switching recommendation |
+| [DeepCode evaluation](docs/deepcode-evaluation.md) | DGX validation, measured harness overhead, risks, and staged adoption decision |
 | [Configuration](docs/configuration.md) | Commands, profiles, routes, harnesses, providers, models, workers, and repositories |
 | [Observability](docs/observability.md) | Agents, tokens, prompt cache, KV cache, model endpoints, and DGX metrics |
 | [Herdr integration](docs/herdr.md) | Editable agent terminals, plugin actions, harness adapters, lifecycle, and deployment |
