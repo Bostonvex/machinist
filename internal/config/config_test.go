@@ -651,6 +651,24 @@ func TestLoadCommandRequiresPromptParameterAndRejectsUnsupportedMachinistParamet
 	}
 }
 
+func TestLoadCommandNormalizesPromptLineEndings(t *testing.T) {
+	// A prompt file checked out with CRLF must produce the same prompt as one
+	// checked out with LF: what an agent reads on stdin cannot depend on the
+	// checkout's line-ending configuration.
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "plan.md"), "# Heading\r\nPlan {{machinist.prompt}}.\r\n")
+	definition := filepath.Join(directory, "config.toml")
+	writeTestFile(t, definition, "[commands.plan]\nexecutor = \"test\"\nprompt_file = \"plan.md\"\n")
+
+	command, err := LoadCommand(definition, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# Heading\nPlan {{machinist.prompt}}.\n"; command.Prompt != want {
+		t.Fatalf("prompt = %q, want %q", command.Prompt, want)
+	}
+}
+
 func TestLoadCommandRejectsMissingAndInvalidDefinitions(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, filepath.Join(directory, "plan.md"), "Plan.\n")
