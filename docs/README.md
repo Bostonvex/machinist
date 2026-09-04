@@ -29,6 +29,7 @@ matches the way you want to work.
 
 - [Architecture](../ARCHITECTURE.md)
 - [Adaptive agent platform design](adaptive-agent-platform.md)
+- [Governance and roles](governance/README.md) — consolidated software-work governance (Phase A)
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
 - [DeepCode evaluation](deepcode-evaluation.md) — DGX compatibility, measured
   harness overhead, risks, recommendation, and staged cutover.
