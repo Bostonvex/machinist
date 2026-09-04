@@ -49,13 +49,16 @@ func TestInspectFiltersProfilesWithoutExposingSecretNames(t *testing.T) {
 
 func TestInspectChecksPlatformAndExecutable(t *testing.T) {
 	worker := config.Worker{Profiles: map[string]config.Profile{
-		"windows-only": {Harness: "generic", AuthMode: "local", Command: []string{"agent"}, RequiresOS: []string{"windows"}},
-		"missing":      {Harness: "generic", AuthMode: "local", Command: []string{"missing"}},
+		"other-os": {Harness: "generic", AuthMode: "local", Command: []string{"agent"}, RequiresOS: []string{"not-a-real-os"}},
+		"missing":  {Harness: "generic", AuthMode: "local", Command: []string{"missing"}},
 	}}
+	// The requirement must name an OS no host reports: against a detected
+	// manifest, requiring the host's own OS passes the platform check and
+	// inspection reports the executable reason instead.
 	manifest := environment.Detect(nil)
 	report := inspect(worker, manifest, func(string) (string, error) { return "", errors.New("not found") }, func(string) (string, bool) { return "", false }, func(string) bool { return true })
-	if report.Profiles["windows-only"].Reason != "operating system requirement not met" {
-		t.Fatalf("windows profile = %#v", report.Profiles["windows-only"])
+	if report.Profiles["other-os"].Reason != "operating system requirement not met" {
+		t.Fatalf("other-os profile = %#v", report.Profiles["other-os"])
 	}
 	if report.Profiles["missing"].Reason != "harness executable unavailable" {
 		t.Fatalf("missing profile = %#v", report.Profiles["missing"])

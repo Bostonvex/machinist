@@ -589,7 +589,10 @@ func resolveCommand(definitionPath, name string, command Command, routes map[str
 		if err != nil {
 			return ResolvedCommand{}, fmt.Errorf("read command %q prompt %q: %w", name, promptPath, err)
 		}
-		prompt = string(body)
+		// Normalize line endings so the bytes an agent receives on stdin do not
+		// depend on the checkout's line-ending configuration. A prompt file
+		// checked out with CRLF must render the same prompt as one with LF.
+		prompt = strings.ReplaceAll(string(body), "\r\n", "\n")
 		if strings.TrimSpace(prompt) == "" {
 			return ResolvedCommand{}, fmt.Errorf("command %q prompt is empty", name)
 		}
