@@ -29,6 +29,7 @@ matches the way you want to work.
 
 - [Architecture](../ARCHITECTURE.md)
 - [Adaptive agent platform design](adaptive-agent-platform.md)
+- [Governance and roles](governance/README.md) — consolidated software-work governance (Phase A)
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
 - [Consolidation migration plan](migration-plan.md) — absorb ASF, buzz-workspace,
   and buzz-agent-observability into Machinist, then sunset them
