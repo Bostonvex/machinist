@@ -231,6 +231,39 @@ func (g *GitHubCLI) IssueDetails(ctx context.Context, repository string, number 
 	return details, nil
 }
 
+// IssueLabels reads the labels currently on an issue and nothing else.
+//
+// It sits beside IssueDetails rather than inside it because the two answer
+// different questions. Intake asks when a request was made, which needs the
+// event timeline and a request label to look for, and costs a second paginated
+// call. Checking what an agent claimed about its own run needs only the labels,
+// and routing that through IssueDetails would make every marker publication pay
+// for a timeline nobody reads.
+func (g *GitHubCLI) IssueLabels(ctx context.Context, repository string, number int) ([]string, error) {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	if number <= 0 {
+		return nil, errors.New("github issue number must be positive")
+	}
+	endpoint := fmt.Sprintf("repos/%s/issues/%d", repository, number)
+	stdout, err := g.run(ctx, "read issue labels", []string{"api", "--method", "GET", endpoint})
+	if err != nil {
+		return nil, err
+	}
+	details, err := parseGitHubIssueDetails(repository, stdout)
+	if err != nil {
+		return nil, malformedGitHubOutput("read issue labels", err, stdout)
+	}
+	// The labels of some other issue are not this issue's labels. Answering
+	// with them would decide a run's fate from a page nobody asked about.
+	if details.Number != number {
+		return nil, malformedGitHubOutput("read issue labels", fmt.Errorf("returned issue number %d, want %d", details.Number, number), stdout)
+	}
+	return details.Labels, nil
+}
+
 // Permission returns the repository permission GitHub reports for an actor.
 func (g *GitHubCLI) Permission(ctx context.Context, repository, actor string) (string, error) {
 	repository, err := normalizeGitHubRepository(repository)

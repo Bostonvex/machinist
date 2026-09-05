@@ -67,6 +67,7 @@ type Server struct {
 	githubRepositories map[string]string
 	github             githubTriggerClient
 	markers            *factoryrun.Updater
+	issueLabels        gitHubIssueLabels
 	pullRequests       gitHubPullRequests
 	changes            gitHubOpenChanges
 	reviews            review.Engine
@@ -227,6 +228,7 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 		store: store, definitionPath: definitionPath, triggers: managedTriggers,
 		githubRepositories: githubRepositories,
 		github:             githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)),
+		issueLabels:  githubCLI,
 		pullRequests: githubCLI, changes: githubCLI, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
