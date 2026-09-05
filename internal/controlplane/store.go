@@ -17,6 +17,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/environment"
+	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/review"
 	_ "modernc.org/sqlite"
@@ -238,7 +239,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // schemaVersion is the schema this build knows how to read. It must match the
 // PRAGMA user_version at the end of the schema block below; opening a fresh
 // database asserts that, so the two cannot drift apart unnoticed.
-const schemaVersion = 14
+const schemaVersion = 15
 
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
@@ -321,6 +322,9 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 	if err := s.upgradeToVersionFourteen(ctx); err != nil {
 		return fmt.Errorf("upgrade database schema to version 14: %w", err)
 	}
+	if err := s.upgradeToVersionFifteen(ctx); err != nil {
+		return fmt.Errorf("upgrade database schema to version 15: %w", err)
+	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
@@ -359,7 +363,7 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (trigger_identity TEXT NOT NU
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>'';
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
-CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', pull_request INTEGER NOT NULL DEFAULT 0, published_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', pull_request INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_reviews (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, reviewer_run_id TEXT NOT NULL, pull_request INTEGER NOT NULL, verdict TEXT NOT NULL, high_risk INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', findings TEXT NOT NULL DEFAULT '[]', protected_paths TEXT NOT NULL DEFAULT '[]', reasons TEXT NOT NULL DEFAULT '[]', reviewed_head TEXT NOT NULL DEFAULT '', recorded_at TEXT NOT NULL, PRIMARY KEY(run_id,reviewer_run_id));
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
 CREATE TABLE IF NOT EXISTS review_assignments (
@@ -374,7 +378,7 @@ CREATE TABLE IF NOT EXISTS issue_claims (
  holder TEXT NOT NULL, branch TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
  transfer TEXT NOT NULL DEFAULT '', claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL,
  updated_at TEXT NOT NULL, PRIMARY KEY(repository,issue));
-PRAGMA user_version=14;`
+PRAGMA user_version=15;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -480,6 +484,41 @@ func (s *Store) upgradeToVersionFourteen(ctx context.Context) error {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE run_reviews ADD COLUMN reviewed_head TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+// upgradeToVersionFifteen records the stage each published marker described, as
+// opposed to the run state it was derived from. The two stopped being the same
+// thing when a finished run started being checked against the issue: a run that
+// exited zero having stopped to ask a person is state "succeeded" and stage
+// "parked", and only the stage says so.
+//
+// The board reads this column so that it never has to ask GitHub what it is
+// showing. That is the property that makes the board worth acting on, and a
+// board that reconstructs its own contents from the forge is the thing this
+// control plane replaced.
+//
+// Existing rows keep an empty stage. That is the truth about them: they were
+// published when nothing confirmed a completion claim, so nothing here knows
+// whether they finished or stopped.
+func (s *Store) upgradeToVersionFifteen(ctx context.Context) error {
+	var markersTable int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='github_run_markers'`).Scan(&markersTable); err != nil {
+		return err
+	}
+	if markersTable == 0 {
+		return nil
+	}
+	var present int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('github_run_markers') WHERE name='stage'`).Scan(&present); err != nil {
+		return err
+	}
+	if present > 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE github_run_markers ADD COLUMN stage TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -2104,14 +2143,24 @@ func strictestVerdict(joined string) (review.Verdict, error) {
 // the job stops being a marker target until that state changes again. It is
 // written after the marker itself: a crash in between costs one republication,
 // which publishes nothing new because unchanged evidence is not rewritten.
-func (s *Store) RecordPublishedMarker(ctx context.Context, target GitHubMarkerTarget) error {
+//
+// The stage is recorded alongside the state because it is not derivable from
+// it. A run that stopped to ask a person is state "succeeded" and stage
+// "parked", and the board has no way to tell those apart without being told.
+// A stage nobody names is refused rather than stored empty: an empty stage is
+// what rows written before this column carry, and it means "unknown", which is
+// not something a publication that just happened is allowed to say.
+func (s *Store) RecordPublishedMarker(ctx context.Context, target GitHubMarkerTarget, stage factoryrun.Stage) error {
 	if strings.TrimSpace(target.JobID) == "" {
 		return errors.New("marker job id is required")
 	}
+	if strings.TrimSpace(string(stage)) == "" {
+		return errors.New("marker stage is required")
+	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO github_run_markers(job_id,run_state,attempt_id,verdict,pull_request,published_at) VALUES(?,?,?,?,?,?)
-ON CONFLICT(job_id) DO UPDATE SET run_state=excluded.run_state,attempt_id=excluded.attempt_id,verdict=excluded.verdict,pull_request=excluded.pull_request,published_at=excluded.published_at`,
-		target.JobID, target.RunState, target.AttemptID, string(target.Verdict), target.PullRequest, now); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO github_run_markers(job_id,run_state,attempt_id,verdict,pull_request,stage,published_at) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(job_id) DO UPDATE SET run_state=excluded.run_state,attempt_id=excluded.attempt_id,verdict=excluded.verdict,pull_request=excluded.pull_request,stage=excluded.stage,published_at=excluded.published_at`,
+		target.JobID, target.RunState, target.AttemptID, string(target.Verdict), target.PullRequest, string(stage), now); err != nil {
 		return fmt.Errorf("record published marker: %w", err)
 	}
 	return nil

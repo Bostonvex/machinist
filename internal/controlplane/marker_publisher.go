@@ -5,9 +5,33 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/owainlewis/machinist/internal/factoryrun"
 )
+
+// gitHubIssueLabels reads the labels an issue currently carries. It is its own
+// interface, separate from the trigger client, because it answers a different
+// question at a different moment: intake asks whether work was requested, and
+// this asks what the agent said about the work once it was done.
+type gitHubIssueLabels interface {
+	IssueLabels(ctx context.Context, repository string, number int) ([]string, error)
+}
+
+// haltingLabels are the states an agent sets on the issue when it stops and
+// hands the work back to a person: a missing decision, or a block it cannot
+// clear. Both mean the same thing to a reader of the board -- nobody is working
+// on this, and it is waiting on a human -- so both park.
+//
+// They are trusted over the run's own exit status because of an asymmetry: "I
+// am blocked" is a claim against the agent's own interest and "I succeeded" is
+// not. The label is also the fact an operator already reads, and the control
+// plane already goes to the forge for the facts it will not take an agent's
+// word for.
+var haltingLabels = map[string]struct{}{
+	"machinist:needs-human": {},
+	"machinist:blocked":     {},
+}
 
 // runStage maps a run state onto the handoff stage a later session reads.
 // Operator cancellation parks rather than fails: nothing was demonstrated about
@@ -60,6 +84,10 @@ func (s *Server) publishFactoryRunMarker(ctx context.Context, target GitHubMarke
 	if err != nil {
 		return err
 	}
+	stage, err = s.confirmedStage(ctx, target, stage)
+	if err != nil {
+		return err
+	}
 	evidence := factoryrun.Evidence{
 		JobID:     target.JobID,
 		RunID:     target.RunID,
@@ -75,5 +103,37 @@ func (s *Server) publishFactoryRunMarker(ctx context.Context, target GitHubMarke
 	if _, err := s.markers.Publish(ctx, target.Repository, target.IssueNumber, evidence); err != nil {
 		return err
 	}
-	return s.store.RecordPublishedMarker(ctx, target)
+	return s.store.RecordPublishedMarker(ctx, target, stage)
+}
+
+// confirmedStage checks a run's claim to have finished against what the agent
+// left on the issue. An exit status of zero is what a run reports about itself,
+// and an agent that stopped to ask a question exits zero having answered
+// nothing: the marker then says complete while the issue two lines below it
+// says the work is waiting on a person. Those cannot both be true, and the one
+// the board acts on is the one that is wrong.
+//
+// Only a run that says it finished is checked. A running run is not claiming
+// anything yet, and a failed one is already reporting against its own interest.
+//
+// An unreadable label state is an error, never a complete. A stage that cannot
+// be confirmed is not confirmed, and this whole function exists because the
+// unconfirmed reading is the one that puts finished work in front of nobody.
+func (s *Server) confirmedStage(ctx context.Context, target GitHubMarkerTarget, stage factoryrun.Stage) (factoryrun.Stage, error) {
+	if stage != factoryrun.StageComplete {
+		return stage, nil
+	}
+	if s.issueLabels == nil {
+		return "", errors.New("no GitHub client to confirm the run finished rather than stopped to ask")
+	}
+	labels, err := s.issueLabels.IssueLabels(ctx, target.Repository, target.IssueNumber)
+	if err != nil {
+		return "", fmt.Errorf("read issue labels: %w", err)
+	}
+	for _, label := range labels {
+		if _, halting := haltingLabels[strings.ToLower(strings.TrimSpace(label))]; halting {
+			return factoryrun.StageParked, nil
+		}
+	}
+	return stage, nil
 }

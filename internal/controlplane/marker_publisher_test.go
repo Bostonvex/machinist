@@ -1,8 +1,11 @@
 package controlplane
 
 import (
+	"context"
 	"errors"
 	"maps"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,12 +39,33 @@ func admitGitHubJob(t *testing.T, store *Store, clock *time.Time) *Server {
 		// the trigger resolved, so the fixture reads it back off the trigger
 		// rather than restating the mapping a second time.
 		githubRepositories: maps.Clone(trigger.GitHubRepositories),
-		now:                func() time.Time { return *clock },
+		// An issue carrying none of the halting labels, which is what an issue
+		// looks like when the work on it really did finish. A test about a run
+		// that stopped instead replaces this.
+		issueLabels: &fakeIssueLabels{},
+		now:         func() time.Time { return *clock },
 	}
 	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	return server
+}
+
+// fakeIssueLabels is what the issue says about the work. It counts its calls,
+// because how often the publisher asks the forge anything is part of the
+// contract: a control plane with nothing new to say makes no GitHub calls.
+type fakeIssueLabels struct {
+	labels map[int][]string
+	err    error
+	calls  int
+}
+
+func (f *fakeIssueLabels) IssueLabels(_ context.Context, _ string, number int) ([]string, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.labels[number], nil
 }
 
 func publishedMarker(t *testing.T, client *fakeCommentClient) factoryrun.Evidence {
@@ -247,5 +271,180 @@ func TestMarkerPublisherPublishesTheStrictestRecordedVerdict(t *testing.T) {
 	comments.listErr = errors.New("github must not be called again")
 	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
 		t.Fatalf("republished an unchanged verdict: %v", err)
+	}
+}
+
+// finishGitHubRun takes the admitted run to a zero exit, which is what an agent
+// that finished the work and an agent that gave up and asked a question both
+// report about themselves.
+func finishGitHubRun(t *testing.T, store *Store) {
+	t.Helper()
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, State: "succeeded", ExitCode: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An agent that stops and hands the work back to a person still exits zero. The
+// marker describes where the work actually got to, not what the process said
+// about itself on the way out.
+//
+// Every halting label is exercised, read from the set the publisher uses rather
+// than listed again here: a label added to that set and to nothing else would
+// otherwise ship as a label that quietly means nothing.
+func TestMarkerPublisherParksARunThatStoppedToAskAHuman(t *testing.T) {
+	if len(haltingLabels) == 0 {
+		t.Fatal("no label means an agent stopped, so no run can ever park")
+	}
+	for label := range haltingLabels {
+		t.Run(label, func(t *testing.T) {
+			clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			store := openManagedTriggerTestStore(t, &clock)
+			server := admitGitHubJob(t, store, &clock)
+			comments := newFakeCommentClient()
+			server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+			server.issueLabels = &fakeIssueLabels{labels: map[int][]string{396: {"machinist:queued", label}}}
+			finishGitHubRun(t, store)
+			if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if stage := publishedMarker(t, comments).Stage; stage != factoryrun.StageParked {
+				t.Fatalf("a run that exited zero carrying %q published stage %q", label, stage)
+			}
+
+			board, err := store.Board(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, column := range board.Columns {
+				switch column.Lane {
+				case LaneParked:
+					if len(column.Cards) != 1 {
+						t.Fatalf("the parked lane holds %d cards", len(column.Cards))
+					}
+					if state := column.Cards[0].State; state != "succeeded" {
+						t.Fatalf("parked card lost the state the store holds: %q", state)
+					}
+				case LaneDone:
+					if len(column.Cards) != 0 {
+						t.Fatalf("a run waiting on a human is shown as done: %#v", column.Cards)
+					}
+				}
+			}
+		})
+	}
+}
+
+// GitHub hands a label back in the case it was created with, and an operator
+// adding one by hand does not always match the prompt.
+func TestMarkerPublisherParksWhateverCaseTheLabelArrivesIn(t *testing.T) {
+	labels := slices.Sorted(maps.Keys(haltingLabels))
+	if len(labels) == 0 {
+		t.Fatal("no label means an agent stopped, so no run can ever park")
+	}
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	server := admitGitHubJob(t, store, &clock)
+	comments := newFakeCommentClient()
+	server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+	server.issueLabels = &fakeIssueLabels{labels: map[int][]string{396: {"  " + strings.ToUpper(labels[0]) + "  "}}}
+	finishGitHubRun(t, store)
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if stage := publishedMarker(t, comments).Stage; stage != factoryrun.StageParked {
+		t.Fatalf("%q did not park the run: stage %q", strings.ToUpper(labels[0]), stage)
+	}
+}
+
+// A completion that could not be confirmed is not published as a completion.
+// The unconfirmed reading is the one this check exists to prevent, so it is not
+// the one taken when the check itself fails.
+func TestMarkerPublisherRefusesACompletionItCannotConfirm(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	server := admitGitHubJob(t, store, &clock)
+	comments := newFakeCommentClient()
+	server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+	labels := &fakeIssueLabels{err: errors.New("the forge said no")}
+	server.issueLabels = labels
+	finishGitHubRun(t, store)
+
+	if err := server.publishFactoryRunMarkers(t.Context()); err == nil {
+		t.Fatal("expected an unreadable label state to be reported")
+	}
+	if len(comments.created) != 0 {
+		t.Fatalf("a stage nobody could confirm was published anyway: %#v", comments.comments)
+	}
+
+	// Nothing was recorded, so the next pass asks again rather than leaving the
+	// run described by whatever the last readable pass said.
+	labels.err = nil
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if stage := publishedMarker(t, comments).Stage; stage != factoryrun.StageComplete {
+		t.Fatalf("recovered publication wrote stage %q", stage)
+	}
+}
+
+// A run in flight is not claiming to have finished, so nothing about it needs
+// confirming and no API call is spent on it.
+func TestMarkerPublisherAsksTheForgeOnlyAboutRunsThatClaimToHaveFinished(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	server := admitGitHubJob(t, store, &clock)
+	comments := newFakeCommentClient()
+	server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+	labels := &fakeIssueLabels{}
+	server.issueLabels = labels
+
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if labels.calls != 0 {
+		t.Fatalf("a run still in flight was checked against the issue %d times", labels.calls)
+	}
+
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, State: "succeeded", ExitCode: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if labels.calls != 1 {
+		t.Fatalf("a finished run was checked against the issue %d times, want once", labels.calls)
+	}
+}
+
+// A build wired without the client that answers the question refuses to answer
+// it, rather than falling back on the claim it was built to check.
+func TestMarkerPublisherRefusesToConfirmACompletionWithNoClient(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	server := admitGitHubJob(t, store, &clock)
+	comments := newFakeCommentClient()
+	server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+	server.issueLabels = nil
+	finishGitHubRun(t, store)
+	if err := server.publishFactoryRunMarkers(t.Context()); err == nil {
+		t.Fatal("expected an unconfirmable completion to be reported")
+	}
+	if len(comments.created) != 0 {
+		t.Fatalf("a stage nobody could confirm was published anyway: %#v", comments.comments)
 	}
 }

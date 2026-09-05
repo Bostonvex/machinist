@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -43,7 +44,14 @@ func dispatch(t *testing.T, store *Store) *protocol.RunSpec {
 func finish(t *testing.T, store *Store, run *protocol.RunSpec, state string) {
 	t.Helper()
 	completion := protocol.Completion{InstanceID: "worker-a", LeaseToken: run.LeaseToken, State: state}
-	if state != "succeeded" {
+	switch state {
+	case "succeeded":
+	case "cancelled":
+		// The store holds cancellation to the exit code a signalled process
+		// actually leaves behind, so a test may not invent a different one.
+		completion.ExitCode = 130
+		completion.Error = "the operator stopped it"
+	default:
 		// The store refuses a failure that exited zero, which is the same
 		// fail-closed rule the board depends on: an outcome has to say what it
 		// was.
@@ -279,6 +287,78 @@ func TestAGitHubIssueTitleWinsOverThePrompt(t *testing.T) {
 	card := findCard(t, readBoard(t, store), id)
 	if card.Title != "Proxy drops upstream on Linux" {
 		t.Fatalf("title = %q, want the issue title", card.Title)
+	}
+}
+
+// recordStage says what a job's published marker described, which is the only
+// thing on the board that was checked against anything outside this control
+// plane.
+func recordStage(t *testing.T, store *Store, jobID, runState string, stage factoryrun.Stage) {
+	t.Helper()
+	if err := store.RecordPublishedMarker(t.Context(),
+		GitHubMarkerTarget{JobID: jobID, RunState: runState, AttemptID: "attempt_one"}, stage); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A card only leaves the done lane, because done is the only lane that says
+// something untrue about a run that stopped to ask a person. Cancelled work was
+// stopped by the operator reading the board, and telling them it is waiting for
+// them is noise, not news.
+func TestOnlyTheDoneLaneGivesACardUpToParked(t *testing.T) {
+	for _, outcome := range []struct {
+		state string
+		lane  Lane
+	}{
+		{"succeeded", LaneParked},
+		{"cancelled", LaneCancelled},
+		{"failed", LaneFailed},
+	} {
+		t.Run(outcome.state, func(t *testing.T) {
+			store := boardStore(t)
+			id := queueJob(t, store, "do the thing")
+			finish(t, store, dispatch(t, store), outcome.state)
+			recordStage(t, store, id, outcome.state, factoryrun.StageParked)
+			if got := findCard(t, readBoard(t, store), id).Lane; got != outcome.lane {
+				t.Fatalf("a %s job with a parked marker is in lane %q, want %q", outcome.state, got, outcome.lane)
+			}
+		})
+	}
+}
+
+// Markers published before the stage was recorded carry no stage. That is not a
+// stage of "finished" and it is not one of "parked": it is the absence of an
+// answer, and the board leaves the card where the run's own state put it.
+func TestAMarkerFromBeforeStagesWereRecordedMovesNothing(t *testing.T) {
+	store := boardStore(t)
+	id := queueJob(t, store, "do the thing")
+	finish(t, store, dispatch(t, store), "succeeded")
+	if _, err := store.db.ExecContext(t.Context(),
+		`INSERT INTO github_run_markers(job_id,run_state,attempt_id,published_at) VALUES(?,'succeeded','attempt_one','2026-09-04T12:00:00Z')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCard(t, readBoard(t, store), id).Lane; got != LaneDone {
+		t.Fatalf("a marker with no stage moved the card to %q", got)
+	}
+}
+
+// The stage a marker described is read from the store like everything else on
+// the board, so a read of it that fails fails the whole board rather than
+// quietly rendering every parked run as finished.
+func TestAnUnreadableMarkerTableIsAnErrorNotAQuietBoard(t *testing.T) {
+	store := boardStore(t)
+	id := queueJob(t, store, "do the thing")
+	finish(t, store, dispatch(t, store), "succeeded")
+	recordStage(t, store, id, "succeeded", factoryrun.StageParked)
+	if _, err := store.db.ExecContext(t.Context(), `DROP TABLE github_run_markers`); err != nil {
+		t.Fatal(err)
+	}
+	board, err := store.Board(t.Context())
+	if err == nil {
+		t.Fatalf("board = %#v, want an error: an unreadable stage must not render as finished", board)
+	}
+	if len(board.Columns) != 0 {
+		t.Fatalf("columns = %d, want no board at all when the read failed", len(board.Columns))
 	}
 }
 

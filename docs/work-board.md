@@ -20,6 +20,10 @@ REVIEW (1)
   JOB           REPOSITORY  TITLE                          DETAIL
   job_e62a3472  machinist   Hold fleets from the plane     awaiting review of #65
 
+PARKED (1)
+  JOB           REPOSITORY  TITLE                          DETAIL
+  job_51e1f87b  machinist   Rewrite the observability doc  stopped, waiting on a person
+
 DONE (14)
   ...
 ```
@@ -27,9 +31,12 @@ DONE (14)
 ## Where it comes from
 
 The board is a projection of what the control plane already recorded: the
-`jobs`, `runs`, `attempts`, `review_assignments` and `run_reviews` it wrote as
-work moved through it. It does not read GitHub, and it does not reconstruct
-state from labels or comments.
+`jobs`, `runs`, `attempts`, `review_assignments`, `run_reviews` and
+`github_run_markers` it wrote as work moved through it. It does not read GitHub,
+and it does not reconstruct state from labels or comments. The one lane that
+comes from a label — `parked`, below — reads the stage the marker publisher
+already resolved and stored, at the moment it published; the board itself still
+asks the forge nothing.
 
 That is the difference from the factory kanban it replaces. The kanban had to
 rebuild the state of every piece of work from issue labels, because nothing else
@@ -43,6 +50,7 @@ remembered to move. Here the board and the dispatcher read the same rows.
 | `queued` | Admitted, waiting for a worker to poll |
 | `running` | A worker holds a lease on it |
 | `review` | The run finished and was sent for review; no verdict yet |
+| `parked` | The run exited cleanly, but the agent stopped and handed the work back to a person |
 | `done` | Succeeded, and reviewed if it was sent for review |
 | `failed` | Failed, or abandoned after its attempts ran out |
 | `cancelled` | Cancelled before it finished |
@@ -52,6 +60,46 @@ remembered to move. Here the board and the dispatcher read the same rows.
 that has been sent for review is not finished no matter what its own state says:
 the run did its work, and nobody has accepted it. Those are separate questions,
 so the board answers them separately.
+
+`parked` is not a job state either, and for the same reason. It is described
+below.
+
+## Parked work
+
+An agent that stops to ask a question exits zero. It ran, it did not crash, and
+it produced nothing anybody can act on until a person answers. Left alone the
+board files that under `done`, which is the one reading that guarantees nobody
+looks at it again.
+
+So the run's own exit status is not taken as the last word on whether it
+finished. When a marker is published for a run that claims to have completed,
+the control plane reads the labels the agent left on the issue. If one of them
+is a halting label — `machinist:needs-human` or `machinist:blocked` — the run is
+recorded as parked instead of complete, and the board puts its card in `parked`
+rather than `done`.
+
+The label is trusted over the exit status because of an asymmetry: "I am
+blocked" is a claim against the agent's own interest and "I succeeded" is not.
+It is also the fact an operator already reads on the issue, so the board and the
+issue stop contradicting each other.
+
+Three limits are worth knowing:
+
+- **Only a run that claims to have finished is checked.** A running run is not
+  claiming anything yet, and a failed one is already reporting against its own
+  interest. This is also what keeps the cost at one extra forge call per
+  finished run.
+- **A label state that cannot be read is an error, not a completion.** No marker
+  is written, the run stays unpublished, and the next scheduler pass tries
+  again. A stage that cannot be confirmed is not confirmed.
+- **The board learns a run parked when its marker is published, not the instant
+  the label appears.** A label added or removed afterwards does not on its own
+  re-publish the marker. This is safe for the case it exists for, because the
+  agent sets the label before it exits.
+
+Only a card that would otherwise be in `done` is moved. A cancelled run also
+records the parked stage, but an operator who cancelled work does not need the
+board to tell them it is waiting for them.
 
 ## Two rules it holds to
 

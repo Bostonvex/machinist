@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/factoryrun"
 )
 
 // The board is the one view that answers "what is this fleet doing right now",
@@ -31,9 +33,18 @@ import (
 type Lane string
 
 const (
-	LaneQueued    Lane = "queued"
-	LaneRunning   Lane = "running"
-	LaneReview    Lane = "review"
+	LaneQueued  Lane = "queued"
+	LaneRunning Lane = "running"
+	LaneReview  Lane = "review"
+
+	// LaneParked holds work that stopped and is waiting on a person: an agent
+	// that could not get a decision it needed, or hit a block it could not
+	// clear. It is a lane of its own and not a corner of done because the two
+	// ask opposite things of an operator. Done asks for nothing. Parked is the
+	// only lane on the board where the work cannot move until a human moves it,
+	// and a card that sits in done instead is a question nobody will ever see.
+	LaneParked Lane = "parked"
+
 	LaneDone      Lane = "done"
 	LaneFailed    Lane = "failed"
 	LaneCancelled Lane = "cancelled"
@@ -58,7 +69,7 @@ var laneByJobState = map[string]Lane{
 // laneOrder is the left-to-right order of the columns, which is the order work
 // moves through them. LaneOther is last because reaching it should feel like
 // reaching the end of what the board understood.
-var laneOrder = []Lane{LaneQueued, LaneRunning, LaneReview, LaneDone, LaneFailed, LaneCancelled, LaneOther}
+var laneOrder = []Lane{LaneQueued, LaneRunning, LaneReview, LaneParked, LaneDone, LaneFailed, LaneCancelled, LaneOther}
 
 // laneForJobState answers which lane a state belongs in, and says whether it
 // recognised the state. Callers need the second answer: an unrecognised state
@@ -137,9 +148,13 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 	if err != nil {
 		return Board{}, fmt.Errorf("read board: %w", err)
 	}
+	stages, err := s.publishedStages(ctx)
+	if err != nil {
+		return Board{}, fmt.Errorf("read board: %w", err)
+	}
 	byLane := make(map[Lane][]Card, len(laneOrder))
 	for _, job := range jobs {
-		card := cardForJob(job, standings)
+		card := cardForJob(job, standings, stages)
 		byLane[card.Lane] = append(byLane[card.Lane], card)
 	}
 	board := Board{Columns: make([]Column, 0, len(laneOrder)), GeneratedAt: s.now().UTC()}
@@ -159,7 +174,15 @@ func (s *Store) Board(ctx context.Context) (Board, error) {
 // different questions — the state records what the run did, the assignment
 // records whether anyone has accepted it — so they are answered separately
 // rather than folded into one table that would have to encode both.
-func cardForJob(job Job, standings map[string]reviewStanding) Card {
+//
+// The published stage moves the card last, and only out of done. It is the one
+// input here that was checked against something outside this control plane, so
+// it settles the disagreement it is in: a run that exited zero while telling a
+// person on the issue that it was stuck did not finish. It moves nothing out of
+// any other lane, because every other lane already says something true. A
+// cancelled job publishes a parked stage too, and an operator who cancelled the
+// work does not need the board to tell them it is waiting for them.
+func cardForJob(job Job, standings map[string]reviewStanding, stages map[string]factoryrun.Stage) Card {
 	lane, recognised := laneForJobState(job.State)
 	card := Card{
 		JobID:      job.ID,
@@ -187,7 +210,45 @@ func cardForJob(job Job, standings map[string]reviewStanding) Card {
 			}
 		}
 	}
+	if card.Lane == LaneDone && stages[job.ID] == factoryrun.StageParked {
+		card.Lane = LaneParked
+	}
 	return card
+}
+
+// publishedStages reads the stage each job's FACTORY:RUN marker last described.
+//
+// It reads the record of what was published rather than asking GitHub what the
+// issue says now, which is the rule the whole board is built on: this view is a
+// projection of what the control plane knows, so that it stays readable when
+// the forge is unreachable and so that rendering it costs no API calls. The
+// price is that the board learns a run parked when the marker for it is
+// published, and not at the instant the label appears.
+//
+// A row published before the stage was recorded carries an empty stage. That is
+// read as "unknown", which moves nothing: those markers were written when
+// nothing confirmed a completion claim, and inventing a stage for them would
+// put work in the parked lane on no evidence at all.
+func (s *Store) publishedStages(ctx context.Context) (map[string]factoryrun.Stage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT job_id,stage FROM github_run_markers`)
+	if err != nil {
+		return nil, fmt.Errorf("read published markers: %w", err)
+	}
+	defer rows.Close()
+	stages := map[string]factoryrun.Stage{}
+	for rows.Next() {
+		var jobID, stage string
+		if err := rows.Scan(&jobID, &stage); err != nil {
+			return nil, fmt.Errorf("read published markers: %w", err)
+		}
+		if trimmed := strings.TrimSpace(stage); trimmed != "" {
+			stages[jobID] = factoryrun.Stage(trimmed)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read published markers: %w", err)
+	}
+	return stages, rows.Close()
 }
 
 // jobTitle is the sentence a person wrote about this work. A job from a GitHub

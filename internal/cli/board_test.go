@@ -225,3 +225,42 @@ func TestABoardTheControlPlaneCannotServeIsAnErrorNotAnEmptyBoard(t *testing.T) 
 		t.Fatalf("stderr = %q, want it to say the board could not be read", stderr)
 	}
 }
+
+// The one lane where nothing will happen until a person acts says so on the
+// card. A parked card that reads like a running one -- a worker name and
+// nothing else -- is the failure this lane was added to fix, moved from the
+// lane heading down into the row.
+func TestTheBoardSaysWhyAParkedCardIsParked(t *testing.T) {
+	workerPath, store, databasePath := boardControlPlane(t)
+	id := boardJob(t, store, "Rewrite the observability document")
+	run, err := store.Poll(t.Context(), protocol.PollRequest{
+		InstanceID: "worker-a", Name: "shop-floor",
+		Executors: []string{"codex"}, Repositories: []string{"machinist"},
+	})
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	if err := store.Complete(t.Context(), run.ID, protocol.Completion{
+		InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, State: "succeeded", ExitCode: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// What the marker publisher writes once it has checked the run's claim to
+	// have finished against the issue it was working.
+	editDatabase(t, databasePath,
+		`INSERT INTO github_run_markers(job_id,run_state,attempt_id,stage,published_at) VALUES(?,'succeeded','attempt_one','parked','2026-09-04T12:00:00Z')`, id)
+
+	stdout, stderr, code := runBoard(t, workerPath)
+	if code != 0 {
+		t.Fatalf("board exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "PARKED (1)") {
+		t.Fatalf("board = %q, want the run in a parked lane", stdout)
+	}
+	if strings.Contains(stdout, "DONE (1)") {
+		t.Fatalf("board = %q, want a run waiting on a person not to be counted as done", stdout)
+	}
+	if !strings.Contains(stdout, "stopped, waiting on a person") {
+		t.Fatalf("board = %q, want the card to say why it is parked", stdout)
+	}
+}
