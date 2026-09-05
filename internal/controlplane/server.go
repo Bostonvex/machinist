@@ -74,6 +74,7 @@ type Server struct {
 	schedulerError     func(error)
 	shutdownTimeout    time.Duration
 	maxConcurrentJobs  int
+	requireFleetLease  bool
 	workerToken        string
 	csrfToken          string
 	handler            http.Handler
@@ -121,6 +122,14 @@ func newObservabilityViews() map[string]*observabilityViewState {
 type ServerOptions struct {
 	ObservabilityURL string
 	HTTPClient       *http.Client
+	// RequireFleetLease turns fleet leasing on. Off, the mechanism does not
+	// exist and nothing changes. On, it fails closed: a fleet with no lease,
+	// an expired one, or an unreadable one is offered no new work.
+	//
+	// It is a setting rather than the default because absence-means-refusal
+	// would stop every existing deployment on upgrade. Turning it on is the
+	// operator stating that they intend to hold that rule.
+	RequireFleetLease bool
 }
 
 type observabilityResponse struct {
@@ -220,7 +229,8 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 		pullRequests: githubCLI, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
-		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
+		maxConcurrentJobs: maxConcurrentJobs, requireFleetLease: options.RequireFleetLease,
+		workerToken: workerToken, csrfToken: csrfToken,
 		observabilityURL: observabilityURL, observabilityHTTP: observabilityHTTP,
 		observabilityViews: newObservabilityViews(), observabilityGrace: observabilityViewGrace,
 		observabilityFetch: observabilityViewTimeout,
@@ -374,6 +384,8 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/jobs", s.authorizeSubmission(s.submit))
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.authorizeSubmission(s.cancelJob))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
+	mux.HandleFunc("GET /api/v1/leases", s.readLeases)
+	mux.HandleFunc("POST /api/v1/leases", s.authorizeSubmission(s.writeLease))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/terminal", s.authorizeWorker(s.bindTerminal))
@@ -746,6 +758,75 @@ func (s *Server) cancelJob(response http.ResponseWriter, request *http.Request) 
 	response.WriteHeader(http.StatusNoContent)
 }
 
+// leaseView is what a lease looks like from outside. It carries the answer the
+// mechanism actually gives — may this fleet take work, right now — rather than
+// leaving every reader to recompute it from the state and the expiry and get
+// the expired-but-allowed case wrong.
+type leaseView struct {
+	Lease
+	Allowed  bool `json:"allowed"`
+	Required bool `json:"required"`
+}
+
+func (s *Server) readLeases(response http.ResponseWriter, request *http.Request) {
+	leases, err := s.store.Leases(request.Context())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	now := s.store.now().UTC()
+	views := make([]leaseView, 0, len(leases))
+	for _, lease := range leases {
+		views = append(views, leaseView{Lease: lease, Allowed: lease.Allows(now), Required: s.requireFleetLease})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"leases": views, "required": s.requireFleetLease})
+}
+
+type leaseRequest struct {
+	Fleet     string `json:"fleet"`
+	State     string `json:"state"`
+	ExpiresAt string `json:"expires_at"`
+	Reason    string `json:"reason"`
+}
+
+func (s *Server) writeLease(response http.ResponseWriter, request *http.Request) {
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
+	var input leaseRequest
+	if err := decodeJSON(request, &input); err != nil {
+		writeDecodeError(response, err)
+		return
+	}
+	// The expiry is parsed here because the wire carries it as text and the
+	// store does not. Everything else about the lease is left to SetLease, so
+	// there is one place — not two that can drift — deciding what a lease may
+	// say.
+	expires, err := time.Parse(time.RFC3339, strings.TrimSpace(input.ExpiresAt))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("expires_at must be an RFC 3339 time: %w", err))
+		return
+	}
+	lease := Lease{Fleet: input.Fleet, State: LeaseState(input.State), ExpiresAt: expires, Reason: input.Reason}
+	if err := s.store.SetLease(request.Context(), lease); err != nil {
+		if errors.Is(err, ErrInvalidLease) {
+			writeError(response, http.StatusBadRequest, err)
+			return
+		}
+		// The lease was well formed and the write still failed, which is this
+		// control plane's problem and not the operator's to fix by editing it.
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	stored, err := s.store.Lease(request.Context(), lease.Fleet)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, leaseView{
+		Lease: stored, Allowed: stored.Allows(s.store.now().UTC()), Required: s.requireFleetLease})
+}
+
 func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 	if !limitRequestBody(response, request, maxRequestBytes) {
 		return
@@ -759,7 +840,15 @@ func (s *Server) poll(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusBadRequest, errors.New("worker instance_id and name are required"))
 		return
 	}
-	run, err := s.store.poll(request.Context(), input, s.maxConcurrentJobs)
+	run, err := s.store.poll(request.Context(), input, s.maxConcurrentJobs, s.requireFleetLease)
+	var refused *ErrFleetRefused
+	if errors.As(err, &refused) {
+		// A refusal is not a failure. The worker is working correctly and is
+		// being told not to take work, which is an ordinary answer to a poll
+		// and must not look to the worker like the control plane is broken.
+		writeJSON(response, http.StatusOK, protocol.PollResponse{Refused: refused.Error()})
+		return
+	}
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, err)
 		return

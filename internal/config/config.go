@@ -35,7 +35,11 @@ const (
 )
 
 type Worker struct {
-	Name          string                `toml:"name"`
+	Name string `toml:"name"`
+	// Fleet is the group of machines an operator stands up or down as one. It
+	// is a statement, not a measurement: no fact a worker can observe about
+	// itself says which machines share its fate, so nothing is inferred here.
+	Fleet         string                `toml:"fleet"`
 	DataDirectory string                `toml:"data_directory"`
 	ControlPlane  ControlPlane          `toml:"control_plane"`
 	Environment   WorkerEnvironment     `toml:"environment"`
@@ -112,10 +116,16 @@ type Repository struct {
 }
 
 type Server struct {
-	Listen            string `toml:"listen"`
-	Database          string `toml:"database"`
-	WorkerTokenFile   string `toml:"worker_token_file"`
-	MaxConcurrentJobs *int   `toml:"max_concurrent_jobs"`
+	Listen          string `toml:"listen"`
+	Database        string `toml:"database"`
+	WorkerTokenFile string `toml:"worker_token_file"`
+	// RequireFleetLease makes every worker's fleet need a standing lease before
+	// it is offered new work. Off by default because absence-means-refusal would
+	// stop every existing deployment on upgrade; turning it on is the operator
+	// saying they intend to hold that rule. Once on it fails closed with no
+	// exceptions, including for a worker that names no fleet.
+	RequireFleetLease bool `toml:"require_fleet_lease"`
+	MaxConcurrentJobs *int `toml:"max_concurrent_jobs"`
 	configDir         string
 }
 

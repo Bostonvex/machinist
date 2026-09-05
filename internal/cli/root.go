@@ -75,6 +75,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newCollectorCommand(options))
 	root.AddCommand(newProxyCommand(options))
 	root.AddCommand(newNotesCommand(options))
+	root.AddCommand(newLeaseCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options))
@@ -235,7 +236,7 @@ func newStartCommand(options *commandOptions) *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			server, err := controlplane.NewServerWithOptions(store, machinistConfig.Path(), token, serverConfig.ConcurrentJobLimit(), controlplane.ServerOptions{ObservabilityURL: machinistConfig.Observability.URL})
+			server, err := controlplane.NewServerWithOptions(store, machinistConfig.Path(), token, serverConfig.ConcurrentJobLimit(), controlplane.ServerOptions{ObservabilityURL: machinistConfig.Observability.URL, RequireFleetLease: serverConfig.RequireFleetLease})
 			if err != nil {
 				return err
 			}

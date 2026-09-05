@@ -116,7 +116,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 11 {
+	if count != 0 || version != schemaVersion {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -127,7 +127,10 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=12;`); err != nil {
+	// One past the current schema, so this fixture keeps meaning "newer than we
+	// know how to read" instead of quietly becoming the version we do read.
+	future := fmt.Sprintf("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=%d;", schemaVersion+1)
+	if _, err := db.Exec(future); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -177,7 +180,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != schemaVersion || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -227,7 +230,7 @@ func TestOpenStoreUpgradesVersionFourWithoutLosingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
+	if version != schemaVersion || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
 		t.Fatalf("version=%d columns=%d cancel=%d jobs=%#v", version, cancellationColumns, cancelRequested, snapshot.Jobs)
 	}
 }
@@ -264,7 +267,7 @@ func TestOpenStoreUpgradesVersionFiveLegacyAttemptBudget(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_attempts FROM runs WHERE job_id=?`, jobID).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || maxAttempts != defaultLegacyMaxAttempts {
+	if version != schemaVersion || maxAttempts != defaultLegacyMaxAttempts {
 		t.Fatalf("version=%d max_attempts=%d", version, maxAttempts)
 	}
 }
@@ -311,7 +314,7 @@ func TestOpenStoreUpgradesVersionSixTokenBudgetWithoutLosingJobs(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_total_tokens FROM runs WHERE job_id=?`, jobID).Scan(&maxTotalTokens); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || budgetColumns != 1 || maxTotalTokens != 0 {
+	if version != schemaVersion || budgetColumns != 1 || maxTotalTokens != 0 {
 		t.Fatalf("version=%d columns=%d max_total_tokens=%d", version, budgetColumns, maxTotalTokens)
 	}
 }
@@ -639,11 +642,11 @@ func TestStoreConcurrentJobLimitLeavesAdditionalJobsQueued(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
+	first, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1, false)
 	if err != nil || first == nil || first.JobID != firstJob {
 		t.Fatalf("first lease = %#v, %v", first, err)
 	}
-	blocked, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	blocked, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1, false)
 	if err != nil || blocked != nil {
 		t.Fatalf("poll at capacity = %#v, %v", blocked, err)
 	}
@@ -662,7 +665,7 @@ func TestStoreConcurrentJobLimitLeavesAdditionalJobsQueued(t *testing.T) {
 	if err := store.Complete(t.Context(), first.ID, protocol.Completion{InstanceID: "worker-a", LeaseToken: first.LeaseToken, State: "succeeded", ExitCode: 0}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	second, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1, false)
 	if err != nil || second == nil || second.JobID != secondJob {
 		t.Fatalf("second lease = %#v, %v", second, err)
 	}
@@ -679,13 +682,13 @@ func TestStoreConcurrentJobLimitRedispatchesExpiredActiveJob(t *testing.T) {
 	if _, err := store.CreateJob(t.Context(), "queued", "machinist", "review", testAgent("review", "Queued request")); err != nil {
 		t.Fatal(err)
 	}
-	initial, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1)
+	initial, err := store.poll(t.Context(), pollRequest("worker-a", []string{"codex"}, []string{"machinist"}), 1, false)
 	if err != nil || initial == nil || initial.JobID != activeJob {
 		t.Fatalf("initial lease = %#v, %v", initial, err)
 	}
 
 	clock.Advance(leaseDuration)
-	redispatched, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1)
+	redispatched, err := store.poll(t.Context(), pollRequest("worker-b", []string{"codex"}, []string{"machinist"}), 1, false)
 	if err != nil || redispatched == nil || redispatched.ID != initial.ID || redispatched.LeaseToken == initial.LeaseToken {
 		t.Fatalf("redispatched lease = %#v, %v", redispatched, err)
 	}
@@ -777,7 +780,7 @@ func TestConcurrentPollsRespectGlobalJobLimit(t *testing.T) {
 		go func(instance string) {
 			defer group.Done()
 			<-start
-			run, err := store.poll(context.Background(), pollRequest(instance, []string{"codex"}, []string{"machinist"}), 1)
+			run, err := store.poll(context.Background(), pollRequest(instance, []string{"codex"}, []string{"machinist"}), 1, false)
 			results <- run
 			errorsChannel <- err
 		}(instance)
@@ -1743,7 +1746,7 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 11 {
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("schema version = %d, %v, want 11", version, err)
 	}
 	var columns int

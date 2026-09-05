@@ -33,6 +33,11 @@ type Worker struct {
 	executeRun     func(context.Context, protocol.RunSpec) protocol.Completion
 	transport      string
 	herdrClient    *herdr.Client
+	// lastRefusal is the standing refusal already reported. A control plane
+	// that is holding a fleet down says so on every poll, and repeating it
+	// every few seconds would bury the log the operator reads to find out why
+	// nothing is running. It is announced when it appears and when it lifts.
+	lastRefusal string
 }
 
 const heartbeatInterval = 10 * time.Second
@@ -199,12 +204,30 @@ func (w *Worker) poll(ctx context.Context) (*protocol.RunSpec, error) {
 		Profiles:     profileCapabilities(capabilities.Profiles),
 		Environment:  workerEnvironment,
 		Transports:   []string{transport},
+		Fleet:        strings.TrimSpace(w.config.Fleet),
 	}
 	var response protocol.PollResponse
 	if err := w.client.Post(ctx, "/api/v1/workers/poll", request, &response); err != nil {
 		return nil, err
 	}
+	w.reportRefusal(response.Refused)
 	return response.Run, nil
+}
+
+// reportRefusal says once why no work is being offered, and says once when that
+// stops. An idle worker and a worker that is being held down look identical
+// from the outside, and the difference is the whole reason the control plane
+// bothers to send a sentence back.
+func (w *Worker) reportRefusal(refusal string) {
+	if refusal == w.lastRefusal {
+		return
+	}
+	if refusal == "" {
+		fmt.Fprintf(w.stderr, "machinist: taking work again (was: %s)\n", w.lastRefusal)
+	} else {
+		fmt.Fprintf(w.stderr, "machinist: not taking work: %s\n", refusal)
+	}
+	w.lastRefusal = refusal
 }
 
 func hasHerdrAdapter(agent string, command []string) bool {

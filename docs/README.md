@@ -22,6 +22,8 @@ matches the way you want to work.
   workers, and multiple model or DGX endpoints.
 - [Windows deployment](windows-deployment.md) — native workers and process-tree
   cancellation.
+- [Fleet leases](fleet-leases.md) — stop a group of workers taking new work,
+  from the control plane rather than through the fleet itself.
 - [Observability bridge](observability.md) — agents, tokens, prompt cache, model
   KV cache, GPU health, and the failure-isolated telemetry collector.
 

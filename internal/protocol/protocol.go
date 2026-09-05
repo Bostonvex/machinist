@@ -24,10 +24,19 @@ type PollRequest struct {
 	Profiles     map[string]ProfileCapability `json:"profiles,omitempty"`
 	Environment  environment.Manifest         `json:"environment,omitempty"`
 	Transports   []string                     `json:"transports,omitempty"`
+	// Fleet is the group of workers an operator stands up or down as one. It
+	// is configuration, not detection: the operator decides which machines
+	// share a fate, and no fact the worker could measure about itself says so.
+	Fleet string `json:"fleet,omitempty"`
 }
 
 type PollResponse struct {
 	Run *RunSpec `json:"run,omitempty"`
+	// Refused says why no work was offered, when the reason was a decision
+	// rather than an empty queue. A silent empty poll is indistinguishable
+	// from there being nothing to do, which is the single most expensive
+	// thing a standing refusal could be confused with.
+	Refused string `json:"refused,omitempty"`
 }
 
 type RunSpec struct {
