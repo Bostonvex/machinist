@@ -138,11 +138,25 @@ func TestReviewerAssignerQueuesOneIndependentReview(t *testing.T) {
 	if assigned[0].Repository != "machinist" {
 		t.Fatalf("review sits in repository %q, not the work's", assigned[0].Repository)
 	}
-	// The reviewer has to be told which change to judge and where the verdict
-	// goes, or it cannot submit one.
-	for _, want := range []string{"owainlewis/machinist/pull/42", "/api/v1/runs/" + fixture.runID + "/review"} {
+	// The reviewer has to be told which change to judge, against which request,
+	// what shape the verdict takes, and how to hand it back. A reviewer that
+	// cannot deliver its verdict has not reviewed anything.
+	for _, want := range []string{
+		"owainlewis/machinist/pull/42",
+		"owainlewis/machinist/issues/396",
+		"VERDICT:",
+		"/api/v1/runs/" + fixture.runID + "/review",
+	} {
 		if !strings.Contains(assigned[0].Prompt, want) {
 			t.Fatalf("review prompt does not mention %q:\n%s", want, assigned[0].Prompt)
+		}
+	}
+	// Every credential in the recipe is named as an environment variable the
+	// worker sets for reviewer runs. A prompt carrying a literal token would be
+	// a secret written into the job table and into the agent's transcript.
+	for _, want := range []string{"$MACHINIST_LEASE_TOKEN", "$MACHINIST_WORKER_INSTANCE", "$MACHINIST_RUN_ID"} {
+		if !strings.Contains(assigned[0].Prompt, want) {
+			t.Fatalf("review prompt does not read %s from the environment:\n%s", want, assigned[0].Prompt)
 		}
 	}
 

@@ -2273,16 +2273,35 @@ func (s *Store) AssignReview(ctx context.Context, candidate ReviewAssignmentCand
 	return jobID, nil
 }
 
-// reviewAssignmentPrompt tells the reviewer which change to judge and where the
-// verdict goes. It names the reviewed run because the reviewer submits against
-// it, and the issue because the reviewer is judging work against what was
-// asked, not against the diff alone.
+// reviewAssignmentPrompt tells the reviewer which change to judge, what shape
+// the verdict takes, and how to hand it back. It names the reviewed run because
+// the reviewer submits against it, and the issue because the reviewer judges
+// work against what was asked, not against the diff alone.
+//
+// The submission is spelled out in full because a reviewer that cannot deliver
+// its verdict has not reviewed anything. Every credential in it is one the
+// worker already holds and puts in the environment for reviewer runs; the
+// reviewer is never asked to invent, guess, or go looking for one.
+//
+// What the prompt does not do is let the reviewer describe the change. The
+// route reads the changed paths from the forge and both identities from the
+// runs, so a reviewer that lies about either is not believed.
 func reviewAssignmentPrompt(candidate ReviewAssignmentCandidate, pullRequest int) string {
 	return fmt.Sprintf(
 		"Independently review https://github.com/%s/pull/%d, the change made for https://github.com/%s/issues/%d.\n"+
-			"Submit your output block to POST /api/v1/runs/%s/review with your own instance id and lease token.\n"+
-			"Do not post to GitHub, approve, or merge.",
-		candidate.GitHubRepository, pullRequest, candidate.GitHubRepository, candidate.IssueNumber, candidate.RunID)
+			"\nWrite a review block in this form:\n"+
+			"VERDICT: ready-for-human-review | changes-requested | escalate\n"+
+			"FINDINGS:\n- [high] path/to/file.go: what is wrong \u2014 what to do instead\n"+
+			"PROTECTED_PATHS: none\nHIGH_RISK: no\nNOTE: one line of context\n"+
+			"\nSubmit it, with REVIEW holding that block:\n"+
+			"curl -sS -X POST \"$MACHINIST_CONTROL_PLANE_URL/api/v1/runs/%s/review\" \\\n"+
+			"  -H 'Content-Type: application/json' \\\n"+
+			"  --data \"$(jq -n --arg o \"$REVIEW\" --arg i \"$MACHINIST_WORKER_INSTANCE\" "+
+			"--arg l \"$MACHINIST_LEASE_TOKEN\" --arg r \"$MACHINIST_RUN_ID\" "+
+			"'{instance_id:$i,lease_token:$l,reviewer_run:$r,pull_request:%d,output:$o}')\"\n"+
+			"\nDo not post to GitHub, approve, or merge.",
+		candidate.GitHubRepository, pullRequest, candidate.GitHubRepository, candidate.IssueNumber,
+		candidate.RunID, pullRequest)
 }
 
 func normalizeRole(role string) string {
