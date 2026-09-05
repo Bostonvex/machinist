@@ -27,6 +27,7 @@ func newCollectorCommand(options *commandOptions) *cobra.Command {
 	collector.AddCommand(newCollectorDoctorCommand(options))
 	collector.AddCommand(newCollectorBackupCommand(options))
 	collector.AddCommand(newCollectorPurgeCommand(options))
+	collector.AddCommand(newCollectorDemoCommand(options))
 	return collector
 }
 
