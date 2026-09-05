@@ -108,8 +108,8 @@ func parseTimestamp(value string) (time.Time, error) {
 // clause is one bound comparison. Nothing in this file builds a clause from a
 // caller-supplied string; the SQL is written here and only the value travels.
 type clause struct {
-	sql   string
-	value any
+	sql    string
+	values []any
 }
 
 type conditions struct {
@@ -117,7 +117,18 @@ type conditions struct {
 }
 
 func (c *conditions) add(sql string, value any) {
-	c.clauses = append(c.clauses, clause{sql, value})
+	c.clauses = append(c.clauses, clause{sql, []any{value}})
+}
+
+// addMany adds one predicate carrying several values, for a clause whose SQL
+// holds more than one placeholder. Adding them as separate clauses would work
+// out to the same values in the same order but would read as a predicate per
+// value, which is not what an IN list is.
+func (c *conditions) addMany(sql string, values ...any) {
+	if len(values) == 0 {
+		return
+	}
+	c.clauses = append(c.clauses, clause{sql, values})
 }
 
 // addIfSet skips an empty value rather than comparing against the empty string,
@@ -136,7 +147,7 @@ func (c *conditions) where() (string, []any) {
 	values := make([]any, 0, len(c.clauses))
 	for _, item := range c.clauses {
 		parts = append(parts, item.sql)
-		values = append(values, item.value)
+		values = append(values, item.values...)
 	}
 	return " WHERE " + strings.Join(parts, " AND "), values
 }
