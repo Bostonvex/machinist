@@ -30,6 +30,8 @@ matches the way you want to work.
 - [Architecture](../ARCHITECTURE.md)
 - [Adaptive agent platform design](adaptive-agent-platform.md)
 - [Governance and roles](governance/README.md) — consolidated software-work governance (Phase A)
+- [Durable knowledge](durable-knowledge.md) — plans, research and work logs kept
+  as repository artifacts, and the `machinist notes` verbs that read them back
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
 - [Consolidation migration plan](migration-plan.md) — absorb ASF, buzz-workspace,
   and buzz-agent-observability into Machinist, then sunset them
