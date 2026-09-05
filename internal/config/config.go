@@ -121,6 +121,7 @@ type Server struct {
 
 type Config struct {
 	Server        Server             `toml:"server"`
+	Collector     Collector          `toml:"collector"`
 	Observability Observability      `toml:"observability"`
 	Commands      map[string]Command `toml:"commands"`
 	Routes        map[string]Route   `toml:"routes"`
@@ -282,6 +283,11 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := applyObservabilityDefaults(&machinistConfig.Observability); err != nil {
+		return Config{}, err
+	}
+	machinistConfig.Collector.configDir = filepath.Dir(machinistConfig.path)
+	machinistConfig.Collector, err = applyCollectorDefaults(machinistConfig.Collector)
+	if err != nil {
 		return Config{}, err
 	}
 	return machinistConfig, nil
