@@ -121,7 +121,7 @@ func (s *Server) reviewerCommands() ([]config.ResolvedCommand, error) {
 		if err != nil {
 			return nil, err
 		}
-		if normalizeRole(command.Role) == review.RoleReviewer {
+		if review.IsReviewer(command.Role) {
 			reviewers = append(reviewers, command)
 		}
 	}
@@ -137,7 +137,7 @@ func (s *Server) reviewerCommands() ([]config.ResolvedCommand, error) {
 // command that names no profile at all is skipped, because an identity that
 // cannot be read cannot be shown to be independent.
 func independentReviewer(reviewers []config.ResolvedCommand, agent string) (config.ResolvedCommand, bool) {
-	author := normalizeRole(agent)
+	author := strings.ToLower(strings.TrimSpace(agent))
 	if author == "" {
 		return config.ResolvedCommand{}, false
 	}
@@ -148,7 +148,7 @@ func independentReviewer(reviewers []config.ResolvedCommand, agent string) (conf
 		}
 		independent := true
 		for _, profile := range profiles {
-			if normalizeRole(profile) == author {
+			if strings.ToLower(strings.TrimSpace(profile)) == author {
 				independent = false
 				break
 			}

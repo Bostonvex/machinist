@@ -2229,7 +2229,7 @@ func (s *Store) AssignReview(ctx context.Context, candidate ReviewAssignmentCand
 	if command.Name == "" {
 		return "", errors.New("review assignment must name one command")
 	}
-	if normalizeRole(command.Role) != review.RoleReviewer {
+	if !review.IsReviewer(command.Role) {
 		return "", fmt.Errorf("review assignment command %q holds role %q, not %q", command.Name, command.Role, review.RoleReviewer)
 	}
 	jobID, err := randomID("job", 12)
@@ -2300,10 +2300,6 @@ func reviewAssignmentPrompt(candidate ReviewAssignmentCandidate, pullRequest int
 			"\nDo not post to GitHub, approve, or merge.",
 		candidate.GitHubRepository, pullRequest, candidate.GitHubRepository, candidate.IssueNumber,
 		candidate.RunID, pullRequest)
-}
-
-func normalizeRole(role string) string {
-	return strings.ToLower(strings.TrimSpace(role))
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {

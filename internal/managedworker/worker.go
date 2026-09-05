@@ -425,7 +425,7 @@ func agentEnvironment(spec protocol.RunSpec, command config.ResolvedCommand, ins
 		"MACHINIST_MAX_TOTAL_TOKENS":     optionalPositiveInt(spec.MaxTotalTokens),
 		"MACHINIST_PREVIOUS_ERROR_CLASS": spec.PreviousErrorClass,
 	}
-	if normalizeRole(spec.Role) == review.RoleReviewer {
+	if review.IsReviewer(spec.Role) {
 		values["MACHINIST_RUN_ID"] = spec.ID
 		values["MACHINIST_LEASE_TOKEN"] = spec.LeaseToken
 		values["MACHINIST_CONTROL_PLANE_URL"] = controlPlaneURL
@@ -436,10 +436,4 @@ func agentEnvironment(spec protocol.RunSpec, command config.ResolvedCommand, ins
 		}
 	}
 	return values
-}
-
-// normalizeRole matches roles the way the control plane does, so a role spelled
-// with different case or padding is still the role it names.
-func normalizeRole(role string) string {
-	return strings.ToLower(strings.TrimSpace(role))
 }

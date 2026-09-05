@@ -12,6 +12,15 @@ const (
 	RoleReviewer    = "reviewer"
 )
 
+// IsReviewer normalises role the way every role-matching call site must, and
+// reports whether it is the reviewer role. It is the single source of truth for
+// the role-matching rule: independence checking, review assignment, and lease
+// handover all consult it, so a role spelled with different case or padding is
+// still the role it names and no caller can ever diverge from the rule.
+func IsReviewer(role string) bool {
+	return normalize(role) == RoleReviewer
+}
+
 // Party is one side of a review: the agent identity that acted and the
 // Machinist run it acted in.
 type Party struct {
@@ -40,10 +49,10 @@ func CheckIndependence(author, reviewer Party) error {
 	if normalize(reviewer.Agent) == "" {
 		return fmt.Errorf("%w: reviewer agent is unknown", ErrNotIndependent)
 	}
-	if normalize(reviewer.Role) != RoleReviewer {
+	if !IsReviewer(reviewer.Role) {
 		return fmt.Errorf("%w: reviewing party holds role %q, not %q", ErrNotIndependent, reviewer.Role, RoleReviewer)
 	}
-	if normalize(author.Role) == RoleReviewer {
+	if IsReviewer(author.Role) {
 		return fmt.Errorf("%w: authoring party holds role %q", ErrNotIndependent, RoleReviewer)
 	}
 	if normalize(author.Agent) == normalize(reviewer.Agent) {
