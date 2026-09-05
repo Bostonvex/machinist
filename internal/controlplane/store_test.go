@@ -116,7 +116,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 8 {
+	if count != 0 || version != 9 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -127,7 +127,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=9;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=10;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -177,7 +177,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 9 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -227,7 +227,7 @@ func TestOpenStoreUpgradesVersionFourWithoutLosingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
+	if version != 9 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
 		t.Fatalf("version=%d columns=%d cancel=%d jobs=%#v", version, cancellationColumns, cancelRequested, snapshot.Jobs)
 	}
 }
@@ -264,7 +264,7 @@ func TestOpenStoreUpgradesVersionFiveLegacyAttemptBudget(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_attempts FROM runs WHERE job_id=?`, jobID).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || maxAttempts != defaultLegacyMaxAttempts {
+	if version != 9 || maxAttempts != defaultLegacyMaxAttempts {
 		t.Fatalf("version=%d max_attempts=%d", version, maxAttempts)
 	}
 }
@@ -311,7 +311,7 @@ func TestOpenStoreUpgradesVersionSixTokenBudgetWithoutLosingJobs(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_total_tokens FROM runs WHERE job_id=?`, jobID).Scan(&maxTotalTokens); err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || budgetColumns != 1 || maxTotalTokens != 0 {
+	if version != 9 || budgetColumns != 1 || maxTotalTokens != 0 {
 		t.Fatalf("version=%d columns=%d max_total_tokens=%d", version, budgetColumns, maxTotalTokens)
 	}
 }
@@ -1743,8 +1743,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
-		t.Fatalf("schema version = %d, %v, want 8", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+		t.Fatalf("schema version = %d, %v, want 9", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {
@@ -1786,4 +1786,133 @@ PRAGMA user_version=1;` + extra); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestGitHubMarkerTargetsFollowTheRunAndStopWhenRecorded(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	trigger := githubTestTrigger()
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: clock,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := store.GitHubMarkerTargets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("a control plane with no admitted work has nothing to publish: %#v", targets)
+	}
+
+	candidate := GitHubCandidate{Repository: "owainlewis/machinist", Number: 396, State: "open", CreatedAt: clock}
+	client := &fakeGitHubTriggerClient{
+		candidates: []GitHubCandidate{candidate},
+		details: GitHubIssueDetails{GitHubCandidate: candidate, Labels: []string{"machinist:requested"}, RequestedEvent: &GitHubLabelEvent{
+			ID: "123", Actor: "owner", CreatedAt: clock, OccurrenceKey: "github.com:123",
+		}},
+		permission: "write",
+	}
+	server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
+	if err := processManagedTriggers(t.Context(), server); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err = store.GitHubMarkerTargets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Repository != "owainlewis/machinist" || targets[0].IssueNumber != 396 || targets[0].RunState != "queued" {
+		t.Fatalf("admitted work is not a marker target: %#v", targets)
+	}
+	if err := store.RecordPublishedMarker(t.Context(), targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = store.GitHubMarkerTargets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("work whose marker is current is not a target: %#v", targets)
+	}
+
+	run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
+	if err != nil || run == nil {
+		t.Fatalf("poll = %#v, %v", run, err)
+	}
+	targets, err = store.GitHubMarkerTargets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].RunState != "running" || targets[0].AttemptID == "" {
+		t.Fatalf("a started run is not a marker target: %#v", targets)
+	}
+}
+
+// Turning marker publication on must not retroactively comment on every issue
+// the control plane has ever worked, so finished work is seeded as already
+// described. Work still in flight is not: it gets its marker on the next pass.
+func TestUpgradeSeedsPublishedMarkersForFinishedWorkOnly(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "machinist.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return clock }
+	trigger := githubTestTrigger()
+	if err := store.SyncTriggers(t.Context(), []TriggerDefinition{{
+		Identity: trigger.Identity, Family: trigger.Family, ConfigSignature: trigger.Signature, NextDueAt: clock,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []int{100, 200} {
+		candidate := GitHubCandidate{Repository: "owainlewis/machinist", Number: number, State: "open", CreatedAt: clock}
+		client := &fakeGitHubTriggerClient{
+			candidates: []GitHubCandidate{candidate},
+			details: GitHubIssueDetails{GitHubCandidate: candidate, Labels: []string{"machinist:requested"}, RequestedEvent: &GitHubLabelEvent{
+				ID: fmt.Sprintf("%d", number), Actor: "owner", CreatedAt: clock, OccurrenceKey: fmt.Sprintf("github.com:%d", number),
+			}},
+			permission: "write",
+		}
+		server := &Server{store: store, triggers: []config.ResolvedTrigger{trigger}, github: client, now: func() time.Time { return clock }}
+		if err := processManagedTriggers(t.Context(), server); err != nil {
+			t.Fatal(err)
+		}
+		if number == 100 {
+			run, err := store.Poll(t.Context(), pollRequest("worker-a", []string{"test"}, []string{"machinist"}))
+			if err != nil || run == nil {
+				t.Fatalf("poll = %#v, %v", run, err)
+			}
+			if err := store.Complete(t.Context(), run.ID, protocol.Completion{
+				InstanceID: "worker-a", LeaseToken: run.LeaseToken, AttemptID: run.AttemptID, State: "succeeded", ExitCode: 0,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clock = clock.Add(trigger.Every)
+	}
+
+	// Return the database to the state it had before markers were published.
+	if _, err := store.db.ExecContext(t.Context(), `DROP TABLE github_run_markers; PRAGMA user_version=8;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upgraded.Close() })
+	targets, err := upgraded.GitHubMarkerTargets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected only the unfinished run to want a marker: %#v", targets)
+	}
+	if targets[0].IssueNumber != 200 || targets[0].RunState != "queued" {
+		t.Fatalf("wrong work was left to describe: %#v", targets[0])
+	}
 }

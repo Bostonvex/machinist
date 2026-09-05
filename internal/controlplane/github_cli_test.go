@@ -372,3 +372,68 @@ func TestGitHubCLIRejectsUnsafeInputsBeforeExecution(t *testing.T) {
 		t.Fatalf("unsafe input reached executable: %v", runner.calls)
 	}
 }
+
+func TestGitHubCLIListsIssueCommentsAcrossPages(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[
+  [{"id":1,"body":"first"}],
+  [{"id":2,"body":"second"}]
+]`})
+
+	comments, err := cli.ListIssueComments(context.Background(), "owner/name", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(comments, []GitHubIssueComment{{ID: 1, Body: "first"}, {ID: 2, Body: "second"}}) {
+		t.Fatalf("unexpected comments: %#v", comments)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "--paginate") || !strings.Contains(call, "repos/owner/name/issues/4/comments") {
+		t.Fatalf("comment listing did not page the issue's comments: %s", call)
+	}
+	if strings.Contains(call, "sh -c") {
+		t.Fatalf("comment listing unexpectedly used a shell: %s", call)
+	}
+}
+
+// A comment with no id cannot be edited in place, so accepting it would grow a
+// second marker on the next write instead of replacing the first.
+func TestGitHubCLIRejectsCommentWithoutID(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[[{"body":"first"}]]`})
+	if _, err := cli.ListIssueComments(context.Background(), "owner/name", 4); err == nil {
+		t.Fatal("expected an error for a comment with no usable id")
+	}
+}
+
+func TestGitHubCLIWritesCommentBodiesWithoutAShell(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{}, scriptedGitHubResult{})
+	body := "line one\nline two $(echo pwned) `whoami`"
+	if err := cli.CreateIssueComment(context.Background(), "owner/name", 4, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.UpdateIssueComment(context.Background(), "owner/name", 77, body); err != nil {
+		t.Fatal(err)
+	}
+	create, update := runner.calls[0], runner.calls[1]
+	if create[len(create)-1] != "body="+body || update[len(update)-1] != "body="+body {
+		t.Fatalf("comment body was not passed as one literal argument: %#v %#v", create, update)
+	}
+	if !strings.Contains(strings.Join(create, " "), "POST") || !strings.Contains(strings.Join(create, " "), "repos/owner/name/issues/4/comments") {
+		t.Fatalf("unexpected create call: %v", create)
+	}
+	if !strings.Contains(strings.Join(update, " "), "PATCH") || !strings.Contains(strings.Join(update, " "), "repos/owner/name/issues/comments/77") {
+		t.Fatalf("unexpected update call: %v", update)
+	}
+}
+
+func TestGitHubCLIRefusesOversizedCommentBody(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	if err := cli.CreateIssueComment(context.Background(), "owner/name", 4, strings.Repeat("x", maxGitHubCommentBytes+1)); err == nil {
+		t.Fatal("expected an oversized comment body to be refused")
+	}
+	if err := cli.UpdateIssueComment(context.Background(), "owner/name", 7, ""); err == nil {
+		t.Fatal("expected an empty comment body to be refused")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("a body GitHub would reject must not reach the CLI: %#v", runner.calls)
+	}
+}

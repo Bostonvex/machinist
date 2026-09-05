@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -63,6 +64,7 @@ type Server struct {
 	definitionPath     string
 	triggers           []config.ResolvedTrigger
 	github             githubTriggerClient
+	markers            *factoryrun.Updater
 	schedulerEvery     time.Duration
 	now                func() time.Time
 	schedulerError     func(error)
@@ -202,9 +204,10 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 	if err := store.SyncTriggers(context.Background(), definitions); err != nil {
 		return nil, fmt.Errorf("restore managed triggers: %w", err)
 	}
+	githubCLI := NewGitHubCLI("gh", 30*time.Second)
 	server := &Server{
 		store: store, definitionPath: definitionPath, triggers: managedTriggers,
-		github: NewGitHubCLI("gh", 30*time.Second), now: time.Now,
+		github: githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)), now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
@@ -317,6 +320,7 @@ func (s *Server) runScheduler(ctx context.Context) error {
 		})
 	}
 	loop(true, s.maintainState)
+	loop(true, s.publishFactoryRunMarkers)
 	<-ctx.Done()
 	schedulers.Wait()
 	return nil

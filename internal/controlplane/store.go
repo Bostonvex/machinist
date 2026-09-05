@@ -190,6 +190,18 @@ type GitHubTriggerRequest struct {
 	JobID            string
 }
 
+// GitHubMarkerTarget is one admitted GitHub-triggered job together with the run
+// doing its work, addressed by the issue the work was requested on. It is the
+// input to FACTORY:RUN marker publication.
+type GitHubMarkerTarget struct {
+	Repository  string
+	IssueNumber int
+	JobID       string
+	RunID       string
+	AttemptID   string
+	RunState    string
+}
+
 type RunOutput struct {
 	Result string
 	Events string
@@ -215,7 +227,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 8
+	const schemaVersion = 9
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -271,6 +283,12 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 		if err := s.upgradeToVersionEight(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 8: %w", err)
 		}
+		version = 8
+	}
+	if version == 8 {
+		if err := s.upgradeToVersionNine(ctx); err != nil {
+			return fmt.Errorf("upgrade database schema to version 9: %w", err)
+		}
 	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -310,12 +328,48 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (trigger_identity TEXT NOT NU
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>'';
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
+CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, published_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=8;`
+PRAGMA user_version=9;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	return nil
+}
+
+// upgradeToVersionNine adds the record of which FACTORY:RUN markers have been
+// published, and seeds it so that turning marker publication on does not
+// retroactively comment on every issue the control plane has ever worked.
+// Finished work is recorded as already described; work still in flight is left
+// undescribed on purpose, so it gets its marker on the next scheduler pass.
+func (s *Store) upgradeToVersionNine(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, published_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	// A database old enough to predate GitHub triggers has no admitted work to
+	// seed from, and its tables are created after this upgrade runs.
+	var sources int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('jobs','runs','attempts','github_trigger_requests')`).Scan(&sources); err != nil {
+		return err
+	}
+	if sources < 4 {
+		return tx.Commit()
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO github_run_markers(job_id,run_state,attempt_id,published_at)
+SELECT j.id,r.state,COALESCE(NULLIF(r.current_attempt_id,''),(SELECT a.id FROM attempts a WHERE a.run_id=r.id ORDER BY a.ordinal DESC LIMIT 1),''),?
+FROM github_trigger_requests g
+JOIN jobs j ON j.id=g.job_id
+JOIN runs r ON r.job_id=j.id
+WHERE g.state='admitted' AND j.state IN ('succeeded','failed','cancelled')`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) upgradeToVersionThree(ctx context.Context) error {
@@ -1837,6 +1891,68 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 	var output RunOutput
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(result,''),COALESCE(events,'') FROM runs WHERE id=?`, runID).Scan(&output.Result, &output.Events)
 	return output, err
+}
+
+// GitHubMarkerTargets returns the GitHub-triggered work whose issue marker does
+// not yet reflect the run: either nothing has been published for the job, or
+// what was published describes a different run state or attempt.
+//
+// The attempt reported is the one running, or the last one that ran once the
+// run is over, so the marker keeps naming the attempt that produced the result
+// instead of dropping it at the moment it becomes evidence.
+//
+// Filtering here rather than after reading GitHub is what keeps marker
+// publication free when nothing is happening: a control plane with no run in
+// flight makes no GitHub calls at all, however long it has been up and however
+// much history the database holds. It is also what makes recovery unbounded --
+// a run that ended while the control plane was down is still waiting to be
+// described when it returns, however much later that is.
+func (s *Store) GitHubMarkerTargets(ctx context.Context) ([]GitHubMarkerTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `WITH marker_runs AS (
+ SELECT g.repository AS repository,g.issue_number AS issue_number,j.id AS job_id,r.id AS run_id,r.state AS run_state,j.created_at AS created_at,
+  COALESCE(NULLIF(r.current_attempt_id,''),(SELECT a.id FROM attempts a WHERE a.run_id=r.id ORDER BY a.ordinal DESC LIMIT 1),'') AS attempt_id
+ FROM github_trigger_requests g
+ JOIN jobs j ON j.id=g.job_id
+ JOIN runs r ON r.job_id=j.id
+ WHERE g.state='admitted')
+SELECT marker_runs.repository,marker_runs.issue_number,marker_runs.job_id,marker_runs.run_id,marker_runs.attempt_id,marker_runs.run_state
+FROM marker_runs
+LEFT JOIN github_run_markers m ON m.job_id=marker_runs.job_id
+WHERE m.job_id IS NULL OR m.run_state<>marker_runs.run_state OR m.attempt_id<>marker_runs.attempt_id
+ORDER BY marker_runs.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	targets := []GitHubMarkerTarget{}
+	for rows.Next() {
+		var target GitHubMarkerTarget
+		if err := rows.Scan(&target.Repository, &target.IssueNumber, &target.JobID, &target.RunID, &target.AttemptID, &target.RunState); err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return targets, nil
+}
+
+// RecordPublishedMarker records the run state a job's marker now describes, so
+// the job stops being a marker target until that state changes again. It is
+// written after the marker itself: a crash in between costs one republication,
+// which publishes nothing new because unchanged evidence is not rewritten.
+func (s *Store) RecordPublishedMarker(ctx context.Context, target GitHubMarkerTarget) error {
+	if strings.TrimSpace(target.JobID) == "" {
+		return errors.New("marker job id is required")
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO github_run_markers(job_id,run_state,attempt_id,published_at) VALUES(?,?,?,?)
+ON CONFLICT(job_id) DO UPDATE SET run_state=excluded.run_state,attempt_id=excluded.attempt_id,published_at=excluded.published_at`,
+		target.JobID, target.RunState, target.AttemptID, now); err != nil {
+		return fmt.Errorf("record published marker: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {

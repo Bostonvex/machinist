@@ -9,6 +9,7 @@ package factoryrun
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,9 @@ type Evidence struct {
 	Branch    string
 	PR        string
 	Repo      string
+	// Stage is where the run has reached, or empty when the writer does not
+	// track a stage. Any other value is rejected.
+	Stage Stage
 	// Verdict is the review engine's terminal judgement, or empty while the
 	// run has not been reviewed yet. Any other value is rejected, so the
 	// marker can never record a verdict the review engine cannot produce.
@@ -30,6 +34,36 @@ type Evidence struct {
 	Checks    []Check
 	Issues    []string
 	UpdatedAt time.Time
+}
+
+// Stage is how far a run has got. It is the field that changes as a run
+// progresses, so it is what makes a republished marker material rather than a
+// timestamp bump. It is a closed set for the same reason CheckState is: a stage
+// a reader does not recognize is an error, not a stage to guess at.
+type Stage string
+
+const (
+	// StageClaimed means the run exists and owns the issue, but has not started.
+	StageClaimed Stage = "claimed"
+	// StageRunning means an attempt is executing.
+	StageRunning Stage = "running"
+	// StageComplete means the run finished on its own terms.
+	StageComplete Stage = "complete"
+	// StageFailed means the run finished without producing its work.
+	StageFailed Stage = "failed"
+	// StageParked means the run stopped and is waiting on a human. Operator
+	// cancellation parks rather than fails: nothing was proven about the work.
+	StageParked Stage = "parked"
+)
+
+var stages = map[Stage]struct{}{
+	StageClaimed: {}, StageRunning: {}, StageComplete: {}, StageFailed: {}, StageParked: {},
+}
+
+// Valid reports whether s is one of the recognized stages.
+func (s Stage) Valid() bool {
+	_, ok := stages[s]
+	return ok
 }
 
 // CheckState is the outcome of one status check. It is a closed set: a state
@@ -93,6 +127,9 @@ func (e Evidence) Validate() error {
 	case strings.TrimSpace(e.Repo) == "":
 		return fmt.Errorf("factoryrun: repo is required")
 	}
+	if e.Stage != "" && !e.Stage.Valid() {
+		return fmt.Errorf("factoryrun: unknown stage %q", e.Stage)
+	}
 	if e.Verdict != "" && !e.Verdict.Valid() {
 		return fmt.Errorf("factoryrun: unknown verdict %q", e.Verdict)
 	}
@@ -105,4 +142,24 @@ func (e Evidence) Validate() error {
 		}
 	}
 	return nil
+}
+
+// SameEvidence reports whether two evidence values say the same thing about a
+// run, ignoring UpdatedAt. Republication compares on this rather than on the
+// rendered bytes: a marker whose only difference is when it was written is not
+// a material change, and rewriting it would churn the issue on every tick.
+func (e Evidence) SameEvidence(other Evidence) bool {
+	if e.JobID != other.JobID || e.RunID != other.RunID || e.AttemptID != other.AttemptID {
+		return false
+	}
+	if e.Branch != other.Branch || e.PR != other.PR || e.Repo != other.Repo {
+		return false
+	}
+	if e.Stage != other.Stage || e.Verdict != other.Verdict {
+		return false
+	}
+	if !slices.Equal(e.Issues, other.Issues) {
+		return false
+	}
+	return slices.Equal(e.Checks, other.Checks)
 }

@@ -112,3 +112,39 @@ func TestParseAcceptsEvidenceWithoutVerdict(t *testing.T) {
 		t.Fatalf("expected no verdict, got %q", got.Verdict)
 	}
 }
+
+func TestParseRejectsUnknownStage(t *testing.T) {
+	body := markerAnchor + "\nrepo: o/r\njob: j\nrun: r\nstage: nearly-done\n"
+	if _, err := Parse(body); err == nil {
+		t.Fatal("expected error for a stage outside the closed set")
+	}
+}
+
+func TestRenderParseRoundTripsStage(t *testing.T) {
+	for _, stage := range []Stage{StageClaimed, StageRunning, StageComplete, StageFailed, StageParked} {
+		body, err := Render(Evidence{JobID: "j", RunID: "r", Repo: "o/r", Stage: stage})
+		if err != nil {
+			t.Fatalf("render %q: %v", stage, err)
+		}
+		got, err := Parse(body)
+		if err != nil {
+			t.Fatalf("parse %q: %v", stage, err)
+		}
+		if got.Stage != stage {
+			t.Fatalf("stage %q round tripped as %q", stage, got.Stage)
+		}
+	}
+}
+
+func TestIsMarkerRequiresTheAnchor(t *testing.T) {
+	if IsMarker("I ran " + MarkerKey + " by hand") {
+		t.Fatal("prose naming the marker is not a marker")
+	}
+	body, err := Render(Evidence{JobID: "j", RunID: "r", Repo: "o/r"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !IsMarker("Here is the state.\n\n" + body) {
+		t.Fatal("a comment containing a rendered marker is a marker")
+	}
+}
