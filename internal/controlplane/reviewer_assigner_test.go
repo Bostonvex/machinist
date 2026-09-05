@@ -258,7 +258,7 @@ func TestReviewerAssignerLeavesReviewedWorkAlone(t *testing.T) {
 	fixture := newAssignerFixture(t, oneReviewerOnClaude, GitHubLinkedPullRequest{Number: 42, State: "open"})
 	if err := fixture.store.RecordReview(t.Context(), RecordedReview{
 		RunID: fixture.runID, ReviewerRunID: "run_someone_else", PullRequest: 42,
-		Verdict: review.VerdictReady,
+		Verdict: review.VerdictReady, ReviewedHead: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
 	}); err != nil {
 		t.Fatal(err)
 	}

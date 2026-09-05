@@ -52,6 +52,10 @@ type fakeGitHubPullRequests struct {
 	linked      []GitHubLinkedPullRequest
 	linkedErr   error
 	linkedCalls int
+
+	head      string
+	headErr   error
+	headCalls int
 }
 
 func (f *fakeGitHubPullRequests) ListPullRequestFiles(_ context.Context, repository string, number int) ([]string, error) {
@@ -61,6 +65,18 @@ func (f *fakeGitHubPullRequests) ListPullRequestFiles(_ context.Context, reposit
 		return nil, f.err
 	}
 	return f.paths, nil
+}
+
+func (f *fakeGitHubPullRequests) PullRequestHead(_ context.Context, repository string, number int) (string, error) {
+	f.headCalls++
+	f.repository, f.number = repository, number
+	if f.headErr != nil {
+		return "", f.headErr
+	}
+	if f.head == "" {
+		return "b3d1a5c47f2e908a1c6d5b4e3f2a1908c7d6e5f4", nil
+	}
+	return f.head, nil
 }
 
 func (f *fakeGitHubPullRequests) LinkedPullRequests(_ context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error) {
