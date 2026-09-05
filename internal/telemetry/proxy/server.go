@@ -145,8 +145,14 @@ type call struct {
 	spanID    string
 	started   time.Time
 	firstByte time.Time
-	status    int
-	failed    bool
+	// firstGenerated is when the first token the model produced reached the
+	// client. It is distinct from firstByte, which is when the headers came
+	// back: between the two sit the provider's preamble and, on a reasoning
+	// model, an arbitrary amount of thinking.
+	firstGenerated time.Time
+	status         int
+	failed         bool
+	read           *inspector
 }
 
 type callKey struct{}
@@ -176,6 +182,27 @@ func (s *Server) forward(response http.ResponseWriter, request *http.Request) {
 	if !measured.firstByte.IsZero() {
 		attributes["first_byte_ms"] = milliseconds(measured.firstByte.Sub(measured.started))
 	}
+	if !measured.firstGenerated.IsZero() {
+		// Decoding is the part of the call the model spent producing output,
+		// as distinct from the part it spent before producing any. Reported
+		// separately because they have different causes: the first is the
+		// model's speed, the second is queueing, prompt processing and
+		// reasoning.
+		attributes["decode_ms"] = milliseconds(finished.Sub(measured.firstGenerated))
+	}
+	if measured.read != nil {
+		measured.read.attributes(attributes)
+	}
+	if measured.status < 400 && measured.read != nil && measured.read.streamError != "" {
+		// The headers said the call succeeded and then the stream said it did
+		// not. The stream is the later and more specific evidence, so it wins;
+		// recording this as a completion would put a success in the table for
+		// a call that produced an error.
+		attributes["error_category"] = "stream_error"
+		attributes["error_code"] = measured.read.streamError
+		s.emit(ModelFailed, measured, finished, attributes)
+		return
+	}
 	if measured.status >= 400 {
 		// An upstream that answered 429 answered. The request was not lost,
 		// and calling it a transport failure would put it in the same bucket
@@ -196,22 +223,66 @@ func (s *Server) observe(response *http.Response) error {
 	}
 	measured.status = response.StatusCode
 	measured.firstByte = s.now()
-	response.Body = &tap{ReadCloser: response.Body}
+	measured.read = newInspector(response.Header.Get("Content-Type"))
+	response.Body = &tap{ReadCloser: response.Body, server: s, call: measured}
 	return nil
 }
 
-// tap counts a body without holding it. The count is not used yet; the reader
-// exists so the response is read through one place, which is where the stream
-// inspection attaches.
+// tap reads the response as the client receives it.
+//
+// It sits here rather than around the whole body because the point of the
+// measurement is when the client could have seen a token, and the only place
+// that is known is the moment the bytes pass through. Nothing it does can
+// change what passes: it returns exactly what it read, and the inspection
+// happens after the bytes are already in the caller's buffer.
 type tap struct {
 	io.ReadCloser
-	bytes int64
+	server   *Server
+	call     *call
+	bytes    int64
+	finished bool
 }
 
 func (t *tap) Read(buffer []byte) (int, error) {
 	read, err := t.ReadCloser.Read(buffer)
 	t.bytes += int64(read)
+	at := t.server.now()
+	if read > 0 {
+		t.call.read.feed(buffer[:read], at)
+	}
+	if err != nil && !t.finished {
+		// Any terminal error ends the reading, not only io.EOF: a stream cut
+		// short still reported whatever usage it managed to send, and that is
+		// more than nothing to record about it.
+		t.finished = true
+		t.call.read.finish(at)
+	}
+	t.server.noteFirstToken(t.call)
 	return read, err
+}
+
+// Close finishes the inspection for a body that was closed rather than read to
+// its end, which is what happens when the client goes away mid-generation.
+func (t *tap) Close() error {
+	if !t.finished {
+		t.finished = true
+		t.call.read.finish(t.server.now())
+		t.server.noteFirstToken(t.call)
+	}
+	return t.ReadCloser.Close()
+}
+
+// noteFirstToken emits model.first_token the first time generation is seen.
+func (s *Server) noteFirstToken(measured *call) {
+	if measured.read == nil || measured.read.firstGenerated.IsZero() || !measured.firstGenerated.IsZero() {
+		return
+	}
+	measured.firstGenerated = measured.read.firstGenerated
+	s.emit(ModelFirstToken, measured, measured.firstGenerated, map[string]any{
+		"elapsed_ms":          milliseconds(measured.firstGenerated.Sub(measured.started)),
+		"correlation":         "unavailable",
+		"measurement_quality": "exact",
+	})
 }
 
 // upstreamFailed answers a request whose upstream could not be reached or
