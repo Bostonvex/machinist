@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +30,7 @@ type Server struct {
 	// because a measurement whose producer changed mid-run cannot be grouped
 	// with the ones around it.
 	identity Producer
+	registry *Registry
 
 	mutex    sync.Mutex
 	listener net.Listener
@@ -48,10 +47,24 @@ func New(settings Settings, sink Sink) *Server {
 		identity: Producer{
 			Name: "machinist-model-proxy", Version: Version, InstanceID: newIdentifier(),
 		},
+		// Until a turn says otherwise a model call belongs to the endpoint that
+		// served it rather than to an agent. Naming a turn here without
+		// evidence would attribute one agent's latency to another.
+		registry: NewRegistry(Context{
+			AgentID:     settings.endpointID,
+			DisplayName: settings.model,
+			Model:       settings.model,
+			EndpointID:  settings.endpointID,
+		}),
 	}
 	server.proxy = server.newReverseProxy()
 	return server
 }
+
+// Registry is the proxy's view of which turns are running. It is exposed so a
+// process that embeds the proxy can report turns directly rather than through
+// the authenticated route, which exists for the harnesses that cannot.
+func (s *Server) Registry() *Registry { return s.registry }
 
 // newReverseProxy builds the forwarder.
 //
@@ -107,8 +120,17 @@ func (s *Server) newReverseProxy() *httputil.ReverseProxy {
 }
 
 // Handler is the proxy's routes.
+//
+// The context route is matched before the forwarding gate, and its path is not
+// one the gate would forward: a request that reaches the upstream must be a
+// model request, and a request that reaches the registry must have carried the
+// token. Neither can be reached by asking for the other.
 func (s *Server) Handler() http.Handler {
-	return http.HandlerFunc(s.serve)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST "+ContextPath, s.serveContext)
+	mux.HandleFunc("DELETE "+ContextPath, s.serveContext)
+	mux.HandleFunc("/", s.serve)
+	return mux
 }
 
 // serve gates a request and then forwards it.
@@ -142,7 +164,12 @@ func (s *Server) serve(response http.ResponseWriter, request *http.Request) {
 // different places — before the round trip, in the body wrapper, at the end —
 // are one record rather than variables shared by closures.
 type call struct {
-	spanID    string
+	spanID string
+	// context is who the call belongs to, resolved once when it starts. It is
+	// held for the life of the call so that every event about one call carries
+	// the same attribution: a turn that ended mid-generation must not make the
+	// completion land on a different agent than the start did.
+	context   Context
 	started   time.Time
 	firstByte time.Time
 	// firstGenerated is when the first token the model produced reached the
@@ -158,9 +185,12 @@ type call struct {
 type callKey struct{}
 
 func (s *Server) forward(response http.ResponseWriter, request *http.Request) {
-	measured := &call{spanID: newIdentifier(), started: s.now()}
+	measured := &call{
+		spanID:  newIdentifier(),
+		context: s.registry.Resolve(identifierOrEmpty(request.Header.Get(ContextHeaderPrefix + "context-id"))),
+		started: s.now(),
+	}
 	s.emit(ModelRequestStarted, measured, s.now(), map[string]any{
-		"correlation":         "unavailable",
 		"measurement_quality": "exact",
 	})
 
@@ -176,7 +206,6 @@ func (s *Server) forward(response http.ResponseWriter, request *http.Request) {
 	attributes := map[string]any{
 		"duration_ms":         milliseconds(finished.Sub(measured.started)),
 		"http_status":         measured.status,
-		"correlation":         "unavailable",
 		"measurement_quality": "exact",
 	}
 	if !measured.firstByte.IsZero() {
@@ -280,7 +309,6 @@ func (s *Server) noteFirstToken(measured *call) {
 	measured.firstGenerated = measured.read.firstGenerated
 	s.emit(ModelFirstToken, measured, measured.firstGenerated, map[string]any{
 		"elapsed_ms":          milliseconds(measured.firstGenerated.Sub(measured.started)),
-		"correlation":         "unavailable",
 		"measurement_quality": "exact",
 	})
 }
@@ -301,7 +329,6 @@ func (s *Server) upstreamFailed(response http.ResponseWriter, request *http.Requ
 			"http_status":         http.StatusBadGateway,
 			"error_category":      "upstream_transport",
 			"error_code":          transportCode(err),
-			"correlation":         "unavailable",
 			"measurement_quality": "exact",
 		}
 		if !measured.firstByte.IsZero() {
@@ -350,21 +377,30 @@ func transportCode(err error) string {
 }
 
 func (s *Server) emit(eventType string, measured *call, at time.Time, attributes map[string]any) {
+	attributes["correlation"] = measured.context.Correlation
+	agent := Agent{ID: measured.context.AgentID, DisplayName: measured.context.DisplayName}
 	s.sink.Enqueue(Event{
-		EventID:    newIdentifier(),
-		EventType:  eventType,
-		ObservedAt: timestamp(at),
-		SpanID:     measured.spanID,
-		Producer:   s.identity,
-		Agent: Agent{
-			// Until a correlation context says otherwise, a model call belongs
-			// to the endpoint that served it rather than to an agent. Naming a
-			// turn here without evidence would attribute one agent's latency
-			// to another.
-			ID:          s.settings.endpointID,
-			DisplayName: s.settings.model,
-		},
-		Attributes: attributes,
+		SchemaVersion: SchemaVersion,
+		EventID:       newIdentifier(),
+		EventType:     eventType,
+		ObservedAt:    timestamp(at),
+		// Measured against the start of this call rather than a process clock,
+		// because the number's only use is ordering events within one call and
+		// a wall clock can move underneath them.
+		MonotonicOffsetMS: milliseconds(at.Sub(measured.started)),
+		Producer:          s.identity,
+		Agent:             agent,
+		Harness:           optional(measured.context.Harness),
+		Model:             optional(measured.context.Model),
+		EndpointID:        optional(measured.context.EndpointID),
+		SessionID:         optional(measured.context.SessionID),
+		TurnID:            optional(measured.context.TurnID),
+		SpanID:            optional(measured.spanID),
+		// The turn is the parent of the model call it made. Where no turn was
+		// resolved this is null, which is the honest answer: the call had a
+		// parent, and this proxy does not know which.
+		ParentSpanID: optional(measured.context.TurnID),
+		Attributes:   attributes,
 	})
 }
 
@@ -442,14 +478,4 @@ func milliseconds(d time.Duration) float64 {
 		return 0
 	}
 	return float64(d.Nanoseconds()) / 1e6
-}
-
-func newIdentifier() string {
-	buffer := make([]byte, 16)
-	if _, err := rand.Read(buffer); err != nil {
-		// crypto/rand does not fail on any platform this runs on, and an
-		// identifier derived from something weaker would collide silently.
-		panic("machinist proxy: no randomness available: " + err.Error())
-	}
-	return hex.EncodeToString(buffer)
 }

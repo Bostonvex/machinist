@@ -55,6 +55,21 @@ var DefaultPaths = []string{
 // they are this system's, and an upstream has no use for them.
 const ContextHeaderPrefix = "x-machinist-telemetry-"
 
+// ContextPath is where a harness declares which turn is running. It is under a
+// reserved prefix that no model API uses, and it is never forwarded.
+const ContextPath = "/__machinist/context"
+
+// MaximumContextBytes bounds a declaration. A context is a handful of short
+// identifiers; anything larger is not one, and reading it to find that out
+// would be reading whatever was actually sent.
+const MaximumContextBytes = 8 * 1024
+
+// MinimumContextTokenBytes is the shortest token the context route accepts.
+// The route can start and end turns, which is to say it can decide who a
+// model call is attributed to, so a token short enough to guess is not a
+// token.
+const MinimumContextTokenBytes = 16
+
 // Config is a proxy fixed at startup.
 type Config struct {
 	// Listen is the loopback address to serve on. A zero port asks the
@@ -75,6 +90,11 @@ type Config struct {
 	// DefaultPaths.
 	Paths []string
 
+	// ContextToken authenticates the context route. Empty leaves the route
+	// closed rather than open: a proxy with no token cannot be told which turn
+	// is running, and reports its calls against the endpoint instead.
+	ContextToken string
+
 	ConnectTimeout  time.Duration
 	ResponseTimeout time.Duration
 }
@@ -88,14 +108,19 @@ type Settings struct {
 	model           string
 	endpointID      string
 	paths           map[string]struct{}
+	contextToken    string
 	connectTimeout  time.Duration
 	responseTimeout time.Duration
 }
 
-func (s Settings) Listen() string                 { return s.listen }
-func (s Settings) Upstream() *url.URL             { return s.upstream }
-func (s Settings) Model() string                  { return s.model }
-func (s Settings) EndpointID() string             { return s.endpointID }
+func (s Settings) Listen() string     { return s.listen }
+func (s Settings) Upstream() *url.URL { return s.upstream }
+func (s Settings) Model() string      { return s.model }
+func (s Settings) EndpointID() string { return s.endpointID }
+
+// ContextsAccepted reports whether this proxy can be told which turn is
+// running. It answers with the fact and not the token.
+func (s Settings) ContextsAccepted() bool         { return s.contextToken != "" }
 func (s Settings) ConnectTimeout() time.Duration  { return s.connectTimeout }
 func (s Settings) ResponseTimeout() time.Duration { return s.responseTimeout }
 
@@ -146,12 +171,29 @@ func Validate(config Config) (Settings, error) {
 			strings.ContainsAny(path, "?#") || strings.ContainsFunc(path, control) {
 			return Settings{}, fmt.Errorf("proxy path %q is not a path", path)
 		}
+		// A forwarded path that collided with the context route would make one
+		// of the two unreachable, and which one depends on routing order
+		// rather than on anything an operator wrote.
+		if path == ContextPath {
+			return Settings{}, fmt.Errorf("proxy path %q is reserved", path)
+		}
 		paths[path] = struct{}{}
+	}
+
+	if config.ContextToken != "" {
+		if len(config.ContextToken) < MinimumContextTokenBytes {
+			return Settings{}, fmt.Errorf("proxy context token must be at least %d bytes",
+				MinimumContextTokenBytes)
+		}
+		if len(config.ContextToken) > 512 || strings.ContainsFunc(config.ContextToken, control) {
+			return Settings{}, errors.New("proxy context token is not a safe token")
+		}
 	}
 
 	settings := Settings{
 		listen: listen, upstream: upstream,
 		model: config.Model, endpointID: config.EndpointID, paths: paths,
+		contextToken:    config.ContextToken,
 		connectTimeout:  or(config.ConnectTimeout, DefaultConnectTimeout),
 		responseTimeout: or(config.ResponseTimeout, DefaultResponseTimeout),
 	}
