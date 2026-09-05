@@ -32,6 +32,11 @@ var (
 	githubActorPattern      = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 	githubBotActorPattern   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?\[bot\]$`)
 	githubSecretPattern     = regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+)`)
+	// gitHubCommitPattern accepts a full 40-character SHA-1 and nothing
+	// shorter. An abbreviated head is ambiguous, and the comparison this feeds
+	// is "is this still the commit that was reviewed", which an abbreviation
+	// can answer wrongly.
+	gitHubCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
 // GitHubCLI invokes the installed GitHub CLI directly. It never uses a shell.
@@ -438,6 +443,40 @@ func (g *GitHubCLI) ListPullRequestFiles(ctx context.Context, repository string,
 		return nil, malformedGitHubOutput("read pull request files", err, stdout)
 	}
 	return paths, nil
+}
+
+// PullRequestHead reads the commit a pull request currently points at.
+//
+// It exists so that a recorded verdict can say which commit it judged. The
+// control plane asks the forge rather than accepting a SHA from the reviewer,
+// for the same reason it reads the changed paths itself: a reviewer that names
+// its own head can name a stale one, and a verdict bound to a commit the
+// reviewer chose is bound to nothing.
+func (g *GitHubCLI) PullRequestHead(ctx context.Context, repository string, number int) (string, error) {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return "", err
+	}
+	if number <= 0 {
+		return "", errors.New("github pull request number must be positive")
+	}
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d", repository, number)
+	stdout, err := g.run(ctx, "read pull request head", []string{
+		"api", "--method", "GET",
+		"-H", "Accept: application/vnd.github+json", endpoint,
+		"--jq", ".head.sha",
+	})
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(string(stdout))
+	if !gitHubCommitPattern.MatchString(head) {
+		// An unreadable head is an error and never an empty string. Every
+		// caller of this is deciding whether an approval still applies, and an
+		// empty head compared against an empty head matches.
+		return "", malformedGitHubOutput("read pull request head", fmt.Errorf("head %q is not a commit sha", head), stdout)
+	}
+	return head, nil
 }
 
 // parseGitHubPullRequestFiles reads either a paginated (--slurp) or a

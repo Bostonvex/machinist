@@ -532,3 +532,66 @@ func TestGitHubCLIRefusesAnUnnumberedIssueTimeline(t *testing.T) {
 		t.Fatalf("github was called anyway: %#v", runner.calls)
 	}
 }
+
+// The commit a review judged is read from the forge, so this is the read that
+// has to be exact. Every caller of it is deciding whether an approval still
+// applies by comparing two strings.
+func TestGitHubCLIReadsThePullRequestHead(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{
+		stdout: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\n",
+	})
+	head, err := cli.PullRequestHead(context.Background(), "owner/name", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678" {
+		t.Fatalf("head = %q", head)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "repos/owner/name/pulls/12") {
+		t.Fatalf("the head was not read from the pull request: %s", call)
+	}
+	// The scripted runner answers with whatever it was given regardless of the
+	// selector, so the selector itself is what has to be asserted. Reading
+	// .base.sha instead would return a real commit that is not the one under
+	// review, and no fixture would notice.
+	if !strings.Contains(call, ".head.sha") {
+		t.Fatalf("the head read did not select the head commit: %s", call)
+	}
+	if strings.Contains(call, "sh -c") {
+		t.Fatalf("the head read unexpectedly used a shell: %s", call)
+	}
+}
+
+// An unreadable head is an error and never an empty string. A caller comparing
+// an empty head against an empty head finds a match, which is how an approval
+// of nothing becomes an approval of whatever is there now.
+func TestGitHubCLIRefusesAHeadThatIsNotACommit(t *testing.T) {
+	for name, output := range map[string]string{
+		"nothing at all":     "",
+		"a branch name":      "main\n",
+		"an abbreviated sha": "a1b2c3d\n",
+		"a json null":        "null\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{stdout: output})
+			head, err := cli.PullRequestHead(context.Background(), "owner/name", 12)
+			if err == nil {
+				t.Fatalf("%q was accepted as a commit", head)
+			}
+			if head != "" {
+				t.Fatalf("a refused read returned %q as well as an error", head)
+			}
+		})
+	}
+}
+
+func TestGitHubCLIRefusesToReadTheHeadOfAnUnnumberedPullRequest(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	if _, err := cli.PullRequestHead(context.Background(), "owner/name", 0); err == nil {
+		t.Fatal("expected an error for pull request 0")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("github was called anyway: %#v", runner.calls)
+	}
+}

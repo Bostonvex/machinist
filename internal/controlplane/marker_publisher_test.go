@@ -213,6 +213,7 @@ func TestMarkerPublisherPublishesTheStrictestRecordedVerdict(t *testing.T) {
 
 	if err := store.RecordReview(t.Context(), RecordedReview{
 		RunID: claimed.RunID, ReviewerRunID: "run_reviewer_one", PullRequest: 7, Verdict: review.VerdictReady,
+		ReviewedHead: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +228,7 @@ func TestMarkerPublisherPublishesTheStrictestRecordedVerdict(t *testing.T) {
 	clock = clock.Add(time.Minute)
 	if err := store.RecordReview(t.Context(), RecordedReview{
 		RunID: claimed.RunID, ReviewerRunID: "run_reviewer_two", PullRequest: 7, Verdict: review.VerdictEscalate,
+		ReviewedHead: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
 	}); err != nil {
 		t.Fatal(err)
 	}

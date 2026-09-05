@@ -238,7 +238,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // schemaVersion is the schema this build knows how to read. It must match the
 // PRAGMA user_version at the end of the schema block below; opening a fresh
 // database asserts that, so the two cannot drift apart unnoticed.
-const schemaVersion = 13
+const schemaVersion = 14
 
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
@@ -312,6 +312,15 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 	// Versions 11 through 13 add review_assignments, fleet_leases and
 	// issue_claims and nothing else. A new table needs no upgrade func: the
 	// schema block below creates it at every version.
+	//
+	// Version 14 adds run_reviews.reviewed_head. A new column on an existing
+	// table does need one, because the block below only creates tables that are
+	// absent -- it will not widen a run_reviews that already exists. Rows
+	// written before the column carry no head, and every reader must read that
+	// as unverifiable rather than as matching.
+	if err := s.upgradeToVersionFourteen(ctx); err != nil {
+		return fmt.Errorf("upgrade database schema to version 14: %w", err)
+	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
@@ -351,7 +360,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identi
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
 CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', pull_request INTEGER NOT NULL DEFAULT 0, published_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run_reviews (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, reviewer_run_id TEXT NOT NULL, pull_request INTEGER NOT NULL, verdict TEXT NOT NULL, high_risk INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', findings TEXT NOT NULL DEFAULT '[]', protected_paths TEXT NOT NULL DEFAULT '[]', reasons TEXT NOT NULL DEFAULT '[]', recorded_at TEXT NOT NULL, PRIMARY KEY(run_id,reviewer_run_id));
+CREATE TABLE IF NOT EXISTS run_reviews (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, reviewer_run_id TEXT NOT NULL, pull_request INTEGER NOT NULL, verdict TEXT NOT NULL, high_risk INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', findings TEXT NOT NULL DEFAULT '[]', protected_paths TEXT NOT NULL DEFAULT '[]', reasons TEXT NOT NULL DEFAULT '[]', reviewed_head TEXT NOT NULL DEFAULT '', recorded_at TEXT NOT NULL, PRIMARY KEY(run_id,reviewer_run_id));
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
 CREATE TABLE IF NOT EXISTS review_assignments (
  reviewed_run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, pull_request INTEGER NOT NULL,
@@ -365,7 +374,7 @@ CREATE TABLE IF NOT EXISTS issue_claims (
  holder TEXT NOT NULL, branch TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
  transfer TEXT NOT NULL DEFAULT '', claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL,
  updated_at TEXT NOT NULL, PRIMARY KEY(repository,issue));
-PRAGMA user_version=13;`
+PRAGMA user_version=14;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -440,6 +449,38 @@ func (s *Store) upgradeToVersionTen(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// upgradeToVersionFourteen records which commit each review judged.
+//
+// It runs against every existing database rather than only one prior version,
+// because the column is what makes a verdict re-checkable and there is no
+// version at which leaving it off is right. Adding a column that is already
+// there is not an upgrade, so the presence check is the whole guard.
+//
+// Existing rows keep an empty head. That is the truth about them: they were
+// recorded when nothing observed which commit was under review, and the reader
+// that treats an empty head as "matches whatever is there now" is the failure
+// this column exists to prevent.
+func (s *Store) upgradeToVersionFourteen(ctx context.Context) error {
+	var reviewsTable int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='run_reviews'`).Scan(&reviewsTable); err != nil {
+		return err
+	}
+	if reviewsTable == 0 {
+		return nil
+	}
+	var present int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('run_reviews') WHERE name='reviewed_head'`).Scan(&present); err != nil {
+		return err
+	}
+	if present > 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE run_reviews ADD COLUMN reviewed_head TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func (s *Store) upgradeToVersionThree(ctx context.Context) error {
@@ -2143,6 +2184,11 @@ type RecordedReview struct {
 	Findings       []review.Finding
 	ProtectedPaths []string
 	Reasons        []string
+	// ReviewedHead is the commit the pull request pointed at when the review
+	// was taken, as the control plane read it from the forge. It is what makes
+	// the verdict re-checkable: a branch that has moved since carries an
+	// approval of work nobody looked at.
+	ReviewedHead string
 }
 
 // RecordReview stores one review of a run. A reviewer that submits twice
@@ -2159,6 +2205,13 @@ func (s *Store) RecordReview(ctx context.Context, recorded RecordedReview) error
 	if !recorded.Verdict.Valid() {
 		return fmt.Errorf("review verdict %q is not one the contract defines", recorded.Verdict)
 	}
+	// A verdict that does not say which commit it judged cannot be shown to
+	// still apply, and an approval that cannot be shown to still apply is not
+	// an approval. Refusing here is why every row this build writes is
+	// re-checkable, and why the empty heads on older rows are a closed set.
+	if !gitHubCommitPattern.MatchString(strings.TrimSpace(recorded.ReviewedHead)) {
+		return fmt.Errorf("review reviewed_head %q is not a commit sha: a verdict has to name what it judged", recorded.ReviewedHead)
+	}
 	findings, err := json.Marshal(recorded.Findings)
 	if err != nil {
 		return fmt.Errorf("encode review findings: %w", err)
@@ -2172,12 +2225,12 @@ func (s *Store) RecordReview(ctx context.Context, recorded RecordedReview) error
 		return fmt.Errorf("encode review reasons: %w", err)
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO run_reviews(run_id,reviewer_run_id,pull_request,verdict,high_risk,note,findings,protected_paths,reasons,recorded_at)
-VALUES(?,?,?,?,?,?,?,?,?,?)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO run_reviews(run_id,reviewer_run_id,pull_request,verdict,high_risk,note,findings,protected_paths,reasons,reviewed_head,recorded_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(run_id,reviewer_run_id) DO UPDATE SET pull_request=excluded.pull_request,verdict=excluded.verdict,high_risk=excluded.high_risk,note=excluded.note,
-findings=excluded.findings,protected_paths=excluded.protected_paths,reasons=excluded.reasons,recorded_at=excluded.recorded_at`,
+findings=excluded.findings,protected_paths=excluded.protected_paths,reasons=excluded.reasons,reviewed_head=excluded.reviewed_head,recorded_at=excluded.recorded_at`,
 		recorded.RunID, recorded.ReviewerRunID, recorded.PullRequest, string(recorded.Verdict), recorded.HighRisk, recorded.Note,
-		string(findings), string(protectedPaths), string(reasons), now); err != nil {
+		string(findings), string(protectedPaths), string(reasons), strings.TrimSpace(recorded.ReviewedHead), now); err != nil {
 		return fmt.Errorf("record review: %w", err)
 	}
 	return nil

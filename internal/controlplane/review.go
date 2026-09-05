@@ -23,6 +23,11 @@ const maxReviewBytes = 1 << 20
 type gitHubPullRequests interface {
 	ListPullRequestFiles(ctx context.Context, repository string, number int) ([]string, error)
 	LinkedPullRequests(ctx context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error)
+	// PullRequestHead answers which commit the change currently points at. It
+	// is on this interface, rather than read from the submission, for the same
+	// reason the changed paths are: the reviewer does not get to say what it
+	// reviewed.
+	PullRequestHead(ctx context.Context, repository string, number int) (string, error)
 }
 
 // submitReview records one independent review of a run.
@@ -91,6 +96,21 @@ func (s *Server) submitReview(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusBadGateway, errors.New("read the reviewed pull request"))
 		return
 	}
+	// Read the head before evaluating, so the commit recorded is the one that
+	// was in place while the reviewer's output was being judged rather than
+	// whatever the branch has become by the time the row is written.
+	//
+	// A head the forge will not give up is refused, and nothing is recorded. A
+	// verdict that cannot be bound to a commit is not a weaker verdict; the
+	// question it answers -- does this approval still apply -- has no answer
+	// without one, and an unanswerable approval that is stored anyway will be
+	// read by something as a yes.
+	reviewedHead, err := s.pullRequests.PullRequestHead(request.Context(), repository, input.PullRequest)
+	if err != nil {
+		log.Printf("review run %q: read %s pull request %d head: %v", reviewedRun, repository, input.PullRequest, err)
+		writeError(response, http.StatusBadGateway, errors.New("read the commit under review"))
+		return
+	}
 	outcome, err := s.reviews.Evaluate(review.Submission{
 		Author:       subject.Author,
 		Reviewer:     subject.Reviewer,
@@ -115,6 +135,7 @@ func (s *Server) submitReview(response http.ResponseWriter, request *http.Reques
 		Findings:       outcome.Findings,
 		ProtectedPaths: outcome.ProtectedPaths,
 		Reasons:        outcome.Reasons,
+		ReviewedHead:   reviewedHead,
 	}); err != nil {
 		log.Printf("review run %q: %v", reviewedRun, err)
 		writeError(response, http.StatusInternalServerError, errors.New("record review"))
