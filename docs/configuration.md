@@ -236,9 +236,13 @@ endpoint_id = "vllm-primary"
 [collector.nvidia]
 node_id = "local-nvidia"
 
-[collector.nvidia_remote]
-node_id = "dgx-spark"
-ssh_host = "spark"
+[[collector.nvidia_remote]]
+node_id = "spark-0e9f"
+ssh_host = "spark-0e9f"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+ssh_host = "spark-27c2"
 
 [collector.proxy]
 listen = "127.0.0.1:7901"
@@ -285,13 +289,30 @@ producers that must present it are configured in `worker.toml`. The identity
 salt is never read by the collector — producers hash their identities with it
 before they send anything, so it has to exist before the first event does.
 
-Each provider table may appear at most once. Two providers under one name would
-share a status row, and an operator reading it could not tell which of them was
-failing. `[collector.nvidia]` polls this machine and `[collector.nvidia_remote]`
-polls another over strict-host-verified SSH; neither substitutes for the other,
+`[collector.nvidia]` polls this machine and `[collector.nvidia_remote]` polls
+another over strict-host-verified SSH; neither substitutes for the other,
 because which machine a reading describes is the whole content of the reading. A
 provider that cannot be built stops the collector rather than being skipped: a
 poller silently absent is indistinguishable from hardware that is idle.
+
+`[collector.nvidia_remote]` may be written once as a table or repeated as
+`[[collector.nvidia_remote]]`, once per node. Both spellings mean the same
+thing, so a deployment with one remote node does not have to be rewritten to
+stay where it is. `[collector.vllm]`, `[collector.nvidia]` and
+`[collector.proxy]` still appear at most once each.
+
+What must hold is that every GPU node has a name and no two share it. `node_id`
+is that name: it keys the provider's status row and is filed with every sample.
+Two nodes answering to one name produce a chart that averages two machines into
+a number describing neither, and a failure nobody can attribute — so the config
+refuses it, across the local and remote tables together. A second remote node
+must be named explicitly rather than defaulted, because `remote-nvidia` is a
+name for *the* remote node and stops being one as soon as there are two.
+
+The remote provider reports itself as `nvidia-smi-remote:<node_id>` in
+`/healthz`. The node is part of the name for the same reason: an operator
+reading a failing poller has to be able to tell which machine stopped
+answering.
 
 ### Operating a collector
 
