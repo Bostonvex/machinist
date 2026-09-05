@@ -68,6 +68,7 @@ type Server struct {
 	github             githubTriggerClient
 	markers            *factoryrun.Updater
 	pullRequests       gitHubPullRequests
+	changes            gitHubOpenChanges
 	reviews            review.Engine
 	schedulerEvery     time.Duration
 	now                func() time.Time
@@ -226,7 +227,7 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 		store: store, definitionPath: definitionPath, triggers: managedTriggers,
 		githubRepositories: githubRepositories,
 		github:             githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)),
-		pullRequests: githubCLI, now: time.Now,
+		pullRequests: githubCLI, changes: githubCLI, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, requireFleetLease: options.RequireFleetLease,
@@ -386,6 +387,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("GET /api/v1/leases", s.readLeases)
 	mux.HandleFunc("GET /api/v1/board", s.board)
+	mux.HandleFunc("GET /api/v1/merge-owed", s.readMergeOwed)
 	mux.HandleFunc("GET /api/v1/claims", s.readClaims)
 	mux.HandleFunc("POST /api/v1/claims", s.authorizeSubmission(s.writeClaim))
 	mux.HandleFunc("POST /api/v1/leases", s.authorizeSubmission(s.writeLease))

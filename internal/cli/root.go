@@ -44,6 +44,15 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if err == nil {
 		return 0
 	}
+	// A command that answered the question and wants to say the answer in its
+	// exit code prints nothing here. The alternative -- a message on stderr
+	// saying "machinist: something is owed a merge" -- would make every cron
+	// entry that reads the code also mail the operator, which is how a working
+	// report becomes a filtered one.
+	var coded *exitCodeError
+	if errors.As(err, &coded) {
+		return coded.code
+	}
 	var outcome *runner.OutcomeError
 	if errors.As(err, &outcome) {
 		fmt.Fprintf(stderr, "machinist: %s\n", outcome.Error())
@@ -57,6 +66,13 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fmt.Fprintf(stderr, "machinist: %s\n", err)
 	return 2
 }
+
+// exitCodeError carries an exit code that is an answer rather than a failure.
+// It exists so that a command can distinguish "I looked and found something"
+// from "I could not look", which are the same non-zero code otherwise.
+type exitCodeError struct{ code int }
+
+func (e *exitCodeError) Error() string { return fmt.Sprintf("exit code %d", e.code) }
 
 func newRootCommand(options *commandOptions) *cobra.Command {
 	root := &cobra.Command{
@@ -78,6 +94,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newLeaseCommand(options))
 	root.AddCommand(newBoardCommand(options))
 	root.AddCommand(newClaimCommand(options))
+	root.AddCommand(newMergeOwedCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options))
