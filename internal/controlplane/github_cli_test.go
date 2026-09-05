@@ -482,3 +482,53 @@ func TestGitHubCLIRefusesAnUnnumberedPullRequest(t *testing.T) {
 		t.Fatalf("github was called anyway: %#v", runner.calls)
 	}
 }
+
+// The issue's own timeline says which changes reference it. A pull request that
+// references an issue several times is one change, and one in another
+// repository is not this repository's work.
+func TestGitHubCLIReadsLinkedPullRequestsOncePerChange(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[
+  [{"event":"labeled","label":{"name":"machinist:requested"}},
+   {"event":"cross-referenced","source":{"type":"issue","issue":{"number":12,"state":"open","pull_request":{"url":"u"},"repository":{"full_name":"owner/name"}}}}],
+  [{"event":"cross-referenced","source":{"type":"issue","issue":{"number":12,"state":"open","pull_request":{"url":"u"},"repository":{"full_name":"owner/name"}}}},
+   {"event":"cross-referenced","source":{"type":"issue","issue":{"number":99,"state":"open","pull_request":{"url":"u"},"repository":{"full_name":"other/repo"}}}},
+   {"event":"cross-referenced","source":{"type":"issue","issue":{"number":7,"state":"closed","repository":{"full_name":"owner/name"}}}},
+   {"event":"cross-referenced","source":{"type":"issue","issue":{"number":13,"state":"closed","pull_request":{"url":"u"},"repository":{"full_name":"owner/name"}}}}]
+]`})
+
+	linked, err := cli.LinkedPullRequests(context.Background(), "owner/name", 396)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []GitHubLinkedPullRequest{{Number: 12, State: "open"}, {Number: 13, State: "closed"}}
+	if !reflect.DeepEqual(linked, want) {
+		t.Fatalf("unexpected linked pull requests: %#v", linked)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "--paginate") || !strings.Contains(call, "repos/owner/name/issues/396/timeline") {
+		t.Fatalf("timeline read did not page the issue's timeline: %s", call)
+	}
+	if strings.Contains(call, "sh -c") {
+		t.Fatalf("timeline read unexpectedly used a shell: %s", call)
+	}
+}
+
+// A cross-reference the control plane cannot name is an error. The caller acts
+// only when exactly one open change identifies the work, and dropping an entry
+// is how "exactly one" quietly becomes wrong.
+func TestGitHubCLIRejectsACrossReferenceWithoutANumber(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[[{"event":"cross-referenced","source":{"type":"issue","issue":{"state":"open","pull_request":{"url":"u"},"repository":{"full_name":"owner/name"}}}}]]`})
+	if _, err := cli.LinkedPullRequests(context.Background(), "owner/name", 396); err == nil {
+		t.Fatal("expected an error for a cross-reference with no number")
+	}
+}
+
+func TestGitHubCLIRefusesAnUnnumberedIssueTimeline(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	if _, err := cli.LinkedPullRequests(context.Background(), "owner/name", 0); err == nil {
+		t.Fatal("expected an error for issue 0")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("github was called anyway: %#v", runner.calls)
+	}
+}

@@ -24,15 +24,21 @@ HIGH_RISK: no
 NOTE: reads clean
 `
 
-type fakePullRequestFiles struct {
+// fakeGitHubPullRequests stands in for the forge: it answers what a change
+// touched, and which changes reference an issue.
+type fakeGitHubPullRequests struct {
 	paths      []string
 	err        error
 	calls      int
 	repository string
 	number     int
+
+	linked      []GitHubLinkedPullRequest
+	linkedErr   error
+	linkedCalls int
 }
 
-func (f *fakePullRequestFiles) ListPullRequestFiles(_ context.Context, repository string, number int) ([]string, error) {
+func (f *fakeGitHubPullRequests) ListPullRequestFiles(_ context.Context, repository string, number int) ([]string, error) {
 	f.calls++
 	f.repository, f.number = repository, number
 	if f.err != nil {
@@ -41,12 +47,21 @@ func (f *fakePullRequestFiles) ListPullRequestFiles(_ context.Context, repositor
 	return f.paths, nil
 }
 
+func (f *fakeGitHubPullRequests) LinkedPullRequests(_ context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error) {
+	f.linkedCalls++
+	f.repository, f.number = repository, number
+	if f.linkedErr != nil {
+		return nil, f.linkedErr
+	}
+	return f.linked, nil
+}
+
 // reviewFixture is one implementer run to be reviewed and one leased reviewer
 // run to review it, in the same repository.
 type reviewFixture struct {
 	server           *Server
 	store            *Store
-	files            *fakePullRequestFiles
+	files            *fakeGitHubPullRequests
 	author           protocol.RunSpec
 	reviewer         protocol.RunSpec
 	reviewerInstance string
@@ -70,7 +85,7 @@ func newReviewFixtureIn(t *testing.T, authorRepository, reviewerRepository strin
 	if _, err := store.CreateJob(t.Context(), "judge it", reviewerRepository, "judge", reviewer); err != nil {
 		t.Fatal(err)
 	}
-	fixture := &reviewFixture{store: store, files: &fakePullRequestFiles{paths: changedPaths}}
+	fixture := &reviewFixture{store: store, files: &fakeGitHubPullRequests{paths: changedPaths}}
 	// Each run is leased by its own worker, because a worker that polls twice
 	// is handed the run it already holds. Which run is which is decided by the
 	// role it was given, not by the order the queue handed them out in.

@@ -119,6 +119,11 @@ judged. The route decides the verdict; the reviewer does not.
   verdict rather than gaining a negative one.
 - **The route decides and records. It does not act.** No merge, no deploy, no
   label.
+- **The review is asked for, not waited for.** The control plane pairs finished
+  GitHub-triggered work with a reviewer that cannot run as the change's author,
+  against the one open pull request the issue's timeline names. Where the change
+  is ambiguous or no independent reviewer is configured, nothing is assigned and
+  the run's marker carries no verdict, which is the honest report.
 
 ### The parts that fail closed
 

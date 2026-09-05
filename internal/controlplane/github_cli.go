@@ -468,6 +468,99 @@ func parseGitHubPullRequestFiles(output []byte) ([]string, error) {
 	return paths, nil
 }
 
+// GitHubLinkedPullRequest is a pull request that references an issue, as the
+// issue's own timeline reports it. It is what the control plane knows about a
+// change without asking the agent that wrote it.
+type GitHubLinkedPullRequest struct {
+	Number int
+	// State is the pull request's issue state, "open" or "closed". A merged
+	// pull request reads as closed.
+	State string
+}
+
+type githubTimelineSourceIssue struct {
+	Number      int             `json:"number"`
+	State       string          `json:"state"`
+	PullRequest json.RawMessage `json:"pull_request"`
+	Repository  *struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+// LinkedPullRequests reads the pull requests in the same repository that
+// reference the issue, from the issue's timeline.
+//
+// The forge is asked rather than the agent: a run does not get to nominate the
+// change it will be judged on. Cross-references from other repositories are
+// dropped, because a review is scoped to the repository the work belongs to.
+func (g *GitHubCLI) LinkedPullRequests(ctx context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error) {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	if number <= 0 {
+		return nil, errors.New("github issue number must be positive")
+	}
+	endpoint := fmt.Sprintf("repos/%s/issues/%d/timeline?per_page=100", repository, number)
+	stdout, err := g.run(ctx, "read issue timeline", []string{
+		"api", "--method", "GET", "--paginate", "--slurp",
+		"-H", "Accept: application/vnd.github+json", endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	linked, err := parseGitHubLinkedPullRequests(repository, stdout)
+	if err != nil {
+		return nil, malformedGitHubOutput("read issue timeline", err, stdout)
+	}
+	return linked, nil
+}
+
+// parseGitHubLinkedPullRequests reads either a paginated (--slurp) or a
+// single-page timeline. A cross-reference from a pull request without a usable
+// number is an error rather than a skipped entry: the caller assigns a review
+// only when it can name exactly one open change, and silently dropping one
+// entry is how "exactly one" becomes wrong.
+//
+// The same pull request may reference an issue many times. Each is reported
+// once, in the order first seen, so the caller's count is a count of changes.
+func parseGitHubLinkedPullRequests(repository string, output []byte) ([]GitHubLinkedPullRequest, error) {
+	var pages [][]githubTimelineEvent
+	if err := decodeSingleJSON(output, &pages); err != nil {
+		var flat []githubTimelineEvent
+		if flatErr := decodeSingleJSON(output, &flat); flatErr != nil {
+			return nil, err
+		}
+		pages = [][]githubTimelineEvent{flat}
+	}
+	var linked []GitHubLinkedPullRequest
+	seen := map[int]struct{}{}
+	for _, page := range pages {
+		for _, event := range page {
+			if !strings.EqualFold(strings.TrimSpace(event.Event), "cross-referenced") {
+				continue
+			}
+			source := event.Source
+			if source == nil || source.Issue == nil || len(source.Issue.PullRequest) == 0 {
+				continue
+			}
+			issue := source.Issue
+			if issue.Repository == nil || !strings.EqualFold(strings.TrimSpace(issue.Repository.FullName), repository) {
+				continue
+			}
+			if issue.Number <= 0 {
+				return nil, fmt.Errorf("cross-referenced pull request has no number")
+			}
+			if _, duplicate := seen[issue.Number]; duplicate {
+				continue
+			}
+			seen[issue.Number] = struct{}{}
+			linked = append(linked, GitHubLinkedPullRequest{Number: issue.Number, State: strings.ToLower(strings.TrimSpace(issue.State))})
+		}
+	}
+	return linked, nil
+}
+
 // GitHubIssueIsEligible applies local intake guards before admission.
 func GitHubIssueIsEligible(issue GitHubIssueDetails, configuredRepositories []string) bool {
 	if !strings.EqualFold(issue.State, "open") || issue.IsPullRequest || issue.RequestedEvent == nil {
@@ -709,6 +802,10 @@ type githubTimelineEvent struct {
 	Label *struct {
 		Name string `json:"name"`
 	} `json:"label"`
+	Source *struct {
+		Type  string                     `json:"type"`
+		Issue *githubTimelineSourceIssue `json:"issue"`
+	} `json:"source"`
 }
 
 func parseLatestGitHubLabelEvent(output []byte, requestedLabel string) (*GitHubLabelEvent, error) {
