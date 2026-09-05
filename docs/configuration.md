@@ -211,6 +211,59 @@ url = "http://127.0.0.1:7900"
 See [Observability bridge](observability.md) for the privacy boundary,
 compatibility aliases, dashboard metrics, and collector topology.
 
+## Collector
+
+Machinist serves the collector itself. `[observability]` says where the control
+plane *reads* a collector from; `[collector]` says where one is offered, and
+`machinist collector start` runs it. A deployment can do either without the
+other.
+
+```toml
+# config.toml
+[collector]
+enabled = true
+listen = "127.0.0.1:7900"
+database = "~/.machinist/collector/telemetry.db"
+token_file = "~/.config/buzz-agent-observability/ingest-token"
+identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+retention = "168h"
+provider_interval = "10s"
+
+[collector.vllm]
+metrics_url = "http://127.0.0.1:18000/metrics"
+endpoint_id = "vllm-primary"
+
+[collector.nvidia]
+node_id = "local-nvidia"
+
+[collector.nvidia_remote]
+node_id = "dgx-spark"
+ssh_host = "spark"
+```
+
+`listen` must be a literal loopback host. The collector is a live description of
+what every agent on this machine is doing; reaching it from elsewhere is an SSH
+tunnel, not a line in a config file.
+
+The telemetry database is deliberately not the control plane's. It is a
+high-volume append-only record with its own retention, and putting it beside
+transactional state invites the two being backed up, copied and truncated as one
+thing.
+
+Both secrets are required and are created on first start. Neither is defaulted:
+a token this process invented would be a credential nobody knows exists, and the
+producers that must present it are configured in `worker.toml`. The identity
+salt is never read by the collector — producers hash their identities with it
+before they send anything, so it has to exist before the first event does.
+
+Each provider table may appear at most once. Two providers under one name would
+share a status row, and an operator reading it could not tell which of them was
+failing. `[collector.nvidia]` polls this machine and `[collector.nvidia_remote]`
+polls another over strict-host-verified SSH; neither substitutes for the other,
+because which machine a reading describes is the whole content of the reading. A
+provider that cannot be built stops the collector rather than being skipped: a
+poller silently absent is indistinguishable from hardware that is idle.
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`

@@ -56,6 +56,9 @@ type Server struct {
 
 	summaryMutex sync.Mutex
 	summaries    map[Filter]cachedSummary
+
+	diagnosticsMutex sync.Mutex
+	diagnostics      func() any
 }
 
 // cachedSummary is one computed summary and when it was computed.
@@ -187,12 +190,68 @@ func (s *Server) ingest(response http.ResponseWriter, request *http.Request) {
 	write(response, http.StatusAccepted, map[string]int{"accepted": len(events), "inserted": inserted})
 }
 
+// SetProviderDiagnostics supplies what the health endpoint reports about the
+// infrastructure providers feeding this collector.
+//
+// The value is opaque to the collector on purpose. Providers import this
+// package to build the events they emit, so this package cannot import theirs
+// to name their status type, and restating that type here would be a second
+// copy to keep in step with the first. Whoever wires the providers owns their
+// shape; the collector only publishes it.
+//
+// Nothing set means no providers were configured, which is reported as such
+// rather than as an empty set: a collector with no providers and one whose
+// providers have not reported yet are different things.
+func (s *Server) SetProviderDiagnostics(diagnostics func() any) {
+	s.diagnosticsMutex.Lock()
+	defer s.diagnosticsMutex.Unlock()
+	s.diagnostics = diagnostics
+}
+
+func (s *Server) providerDiagnostics() (any, bool) {
+	s.diagnosticsMutex.Lock()
+	diagnostics := s.diagnostics
+	s.diagnosticsMutex.Unlock()
+	if diagnostics == nil {
+		return nil, false
+	}
+	return diagnostics(), true
+}
+
+// Ingest stores events produced inside this process and publishes them to live
+// readers, the same way an accepted request does.
+//
+// Infrastructure providers poll on their own schedule instead of posting to the
+// ingest endpoint: they are in this process, and making them authenticate to it
+// over loopback would mean holding the token in order to talk to the thing that
+// issued it. Routing them through here rather than straight at the store is
+// what keeps a live view from going quiet whenever the only thing happening is
+// hardware.
+//
+// A failure is logged and nothing is published. There is no caller to return it
+// to -- a poller has no request to fail -- and publishing an event the store
+// rejected would show a live reader something it could never look up.
+func (s *Server) Ingest(ctx context.Context, events []Event) {
+	if len(events) == 0 {
+		return
+	}
+	if _, err := s.store.Insert(ctx, events); err != nil {
+		s.logger.Printf("telemetry: store %d provider event(s): %v", len(events), err)
+		return
+	}
+	s.maintainRetention(ctx)
+	s.broker.publish(events)
+}
+
 func (s *Server) health(response http.ResponseWriter, request *http.Request) {
 	health, err := s.store.Health(request.Context())
 	if err != nil {
 		s.logger.Printf("telemetry: health: %v", err)
 		write(response, http.StatusServiceUnavailable, failure{Error: "unavailable"})
 		return
+	}
+	if diagnostics, configured := s.providerDiagnostics(); configured {
+		health["providers"] = diagnostics
 	}
 	write(response, http.StatusOK, health)
 }

@@ -4,10 +4,41 @@ database = "~/.machinist/server/machinist.db"
 worker_token_file = "~/.machinist/server/worker.token"
 # max_concurrent_jobs = 1
 
-# Read-only bridge to the separately versioned telemetry collector dashboard.
+# Read-only bridge to the telemetry collector dashboard.
 # [observability]
 # enabled = true
 # url = "http://127.0.0.1:7900"
+
+# The telemetry collector Machinist serves, started with
+# `machinist collector start`. [observability] above says where the control
+# plane *reads* a collector from; this says where one is offered. A deployment
+# can do either without the other.
+#
+# Both secrets are required and are created on first start. The salt is never
+# read by the collector: producers hash their identities with it before they
+# send anything.
+# [collector]
+# enabled = true
+# listen = "127.0.0.1:7900"
+# database = "~/.machinist/collector/telemetry.db"
+# token_file = "~/.config/buzz-agent-observability/ingest-token"
+# identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+# retention = "168h"
+# provider_interval = "10s"
+
+# Optional shared-infrastructure pollers. Each table may appear once, because
+# two providers under one name would share a status row and an operator reading
+# it could not tell which of them was failing.
+# [collector.vllm]
+# metrics_url = "http://127.0.0.1:18000/metrics"
+# endpoint_id = "vllm-primary"
+
+# [collector.nvidia]        # this machine's GPUs
+# node_id = "local-nvidia"
+
+# [collector.nvidia_remote] # another node's, over strict-host-verified SSH
+# node_id = "dgx-spark"
+# ssh_host = "spark"
 
 # Routes choose the first compatible, available worker-local profile. A command
 # uses exactly one of executor, profile, or route.
