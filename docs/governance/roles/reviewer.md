@@ -37,6 +37,20 @@ change — including through a route's fallbacks. Where no such reviewer is
 configured, no review is assigned, and the work stays unreviewed rather than
 being reviewed by its own author.
 
+The prompt carries the whole submission, and every credential in it is read
+from the environment the worker sets:
+
+| Variable | What it is |
+| --- | --- |
+| `MACHINIST_CONTROL_PLANE_URL` | Where the review route answers. |
+| `MACHINIST_RUN_ID` | The reviewing run, which the submission names as its author. |
+| `MACHINIST_LEASE_TOKEN` | The lease that authenticates the submission. |
+| `MACHINIST_WORKER_INSTANCE` | The worker holding that lease. |
+
+The lease is given to reviewer runs and to no other role. It is the only role
+that has to answer the control plane rather than merely report to it; a role
+with nothing to submit is given no credential to submit it with.
+
 ## Where the output goes
 
 Submit the block to the control plane against the run under review:

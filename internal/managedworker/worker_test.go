@@ -559,3 +559,67 @@ func TestManagedWorkerStopsHeartbeatLoopWhenTerminated(t *testing.T) {
 	}
 	ticks <- time.Time{}
 }
+
+// reviewerSpec is an assigned review as the worker receives it: a leased run
+// holding the reviewer role.
+func reviewerSpec(role string) protocol.RunSpec {
+	return protocol.RunSpec{
+		ID: "run_review", JobID: "job_review", AttemptID: "attempt_1", Command: "judge",
+		Role: role, LeaseToken: "lease-secret", AttemptNumber: 1, MaxAttempts: 1,
+	}
+}
+
+// A reviewer has to answer the control plane, so it is given the lease that
+// authenticates its submission and the address to send it to.
+func TestReviewerRunsAreGivenWhatSubmittingAVerdictNeeds(t *testing.T) {
+	environment := agentEnvironment(reviewerSpec("reviewer"), config.ResolvedCommand{Profile: "claude-reviewer"},
+		"worker-a", "http://127.0.0.1:7331")
+
+	for name, want := range map[string]string{
+		"MACHINIST_RUN_ID":            "run_review",
+		"MACHINIST_LEASE_TOKEN":       "lease-secret",
+		"MACHINIST_CONTROL_PLANE_URL": "http://127.0.0.1:7331",
+		"MACHINIST_WORKER_INSTANCE":   "worker-a",
+	} {
+		if environment[name] != want {
+			t.Errorf("%s = %q, want %q", name, environment[name], want)
+		}
+	}
+}
+
+// The role is read the way the control plane reads it, so a reviewer is not
+// left unable to submit because its role was spelled with different case.
+func TestReviewerRoleIsRecognisedHoweverItIsSpelled(t *testing.T) {
+	for _, role := range []string{"reviewer", "Reviewer", "  REVIEWER  "} {
+		environment := agentEnvironment(reviewerSpec(role), config.ResolvedCommand{}, "worker-a", "http://127.0.0.1:7331")
+		if environment["MACHINIST_LEASE_TOKEN"] != "lease-secret" {
+			t.Errorf("role %q was not treated as a reviewer: %#v", role, environment)
+		}
+	}
+}
+
+// Every other role is given no credential. An implementer has nothing to submit
+// to the control plane, so handing it a lease would only widen what a
+// compromised or careless agent can reach.
+func TestOnlyReviewersAreGivenTheLease(t *testing.T) {
+	for _, role := range []string{"implementer", "auditor", "diagnostic", ""} {
+		environment := agentEnvironment(reviewerSpec(role), config.ResolvedCommand{}, "worker-a", "http://127.0.0.1:7331")
+		for _, name := range []string{"MACHINIST_LEASE_TOKEN", "MACHINIST_RUN_ID", "MACHINIST_CONTROL_PLANE_URL"} {
+			if value, present := environment[name]; present {
+				t.Errorf("role %q was given %s = %q", role, name, value)
+			}
+		}
+	}
+}
+
+// An unset value is left out rather than exported empty, so an agent reading
+// the environment can tell "no such thing" from "set to nothing".
+func TestUnsetRunFactsAreNotExportedBlank(t *testing.T) {
+	environment := agentEnvironment(protocol.RunSpec{ID: "run_1", Role: "reviewer", LeaseToken: "lease-secret"},
+		config.ResolvedCommand{}, "worker-a", "")
+	for _, name := range []string{"MACHINIST_JOB_ID", "MACHINIST_PROFILE", "MACHINIST_CONTROL_PLANE_URL"} {
+		if value, present := environment[name]; present {
+			t.Errorf("%s was exported as %q despite having no value", name, value)
+		}
+	}
+}

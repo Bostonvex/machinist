@@ -19,6 +19,7 @@ import (
 	"github.com/owainlewis/machinist/internal/harness"
 	"github.com/owainlewis/machinist/internal/herdr"
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/review"
 	"github.com/owainlewis/machinist/internal/runner"
 )
 
@@ -255,20 +256,8 @@ func (w *Worker) execute(ctx context.Context, spec protocol.RunSpec) protocol.Co
 	for name, value := range w.config.TelemetryEnvironment() {
 		command.Environment[name] = value
 	}
-	for name, value := range map[string]string{
-		"MACHINIST_JOB_ID": spec.JobID, "MACHINIST_ATTEMPT_ID": spec.AttemptID,
-		"MACHINIST_COMMAND": spec.Command, "MACHINIST_ROLE": spec.Role,
-		"MACHINIST_ROUTE": spec.Route, "MACHINIST_PROFILE": command.Profile,
-		"MACHINIST_HARNESS": command.Harness, "MACHINIST_PROVIDER": command.Provider,
-		"MACHINIST_MODEL": command.Model, "MACHINIST_WORKER_INSTANCE": w.instanceID,
-		"MACHINIST_ATTEMPT_NUMBER":       strconv.Itoa(spec.AttemptNumber),
-		"MACHINIST_MAX_ATTEMPTS":         strconv.Itoa(spec.MaxAttempts),
-		"MACHINIST_MAX_TOTAL_TOKENS":     optionalPositiveInt(spec.MaxTotalTokens),
-		"MACHINIST_PREVIOUS_ERROR_CLASS": spec.PreviousErrorClass,
-	} {
-		if value != "" {
-			command.Environment[name] = value
-		}
+	for name, value := range agentEnvironment(spec, command, w.instanceID, w.controlPlaneURL()) {
+		command.Environment[name] = value
 	}
 	if w.config.Environment.DetectionEnabled() {
 		command.Environment["MACHINIST_ENVIRONMENT_DIGEST"] = environment.Detect(w.config.Environment.Tags).Digest
@@ -402,4 +391,55 @@ func randomID(prefix string, byteCount int) (string, error) {
 		return "", err
 	}
 	return prefix + "_" + hex.EncodeToString(body), nil
+}
+
+// controlPlaneURL is the address the control plane answers on, or empty when
+// this worker has no client to answer through. A reviewer with no address is
+// told nothing rather than told a wrong one.
+func (w *Worker) controlPlaneURL() string {
+	if w.client == nil {
+		return ""
+	}
+	return w.client.base
+}
+
+// agentEnvironment is what the agent process is told about the run it is
+// serving. Empty values are left out rather than exported blank, so an agent
+// can tell "not set" from "set to nothing".
+//
+// A reviewer is the one role that also gets the run's lease. It is the only
+// role that has to answer the control plane rather than merely report to it:
+// its verdict goes to the review route, which authenticates the submitting run
+// by that lease. Every other role is given no credential, because no other role
+// has anything to say back — and a credential handed out for no reason is one
+// more thing that can be misused.
+func agentEnvironment(spec protocol.RunSpec, command config.ResolvedCommand, instanceID, controlPlaneURL string) map[string]string {
+	values := map[string]string{
+		"MACHINIST_JOB_ID": spec.JobID, "MACHINIST_ATTEMPT_ID": spec.AttemptID,
+		"MACHINIST_COMMAND": spec.Command, "MACHINIST_ROLE": spec.Role,
+		"MACHINIST_ROUTE": spec.Route, "MACHINIST_PROFILE": command.Profile,
+		"MACHINIST_HARNESS": command.Harness, "MACHINIST_PROVIDER": command.Provider,
+		"MACHINIST_MODEL": command.Model, "MACHINIST_WORKER_INSTANCE": instanceID,
+		"MACHINIST_ATTEMPT_NUMBER":       strconv.Itoa(spec.AttemptNumber),
+		"MACHINIST_MAX_ATTEMPTS":         strconv.Itoa(spec.MaxAttempts),
+		"MACHINIST_MAX_TOTAL_TOKENS":     optionalPositiveInt(spec.MaxTotalTokens),
+		"MACHINIST_PREVIOUS_ERROR_CLASS": spec.PreviousErrorClass,
+	}
+	if normalizeRole(spec.Role) == review.RoleReviewer {
+		values["MACHINIST_RUN_ID"] = spec.ID
+		values["MACHINIST_LEASE_TOKEN"] = spec.LeaseToken
+		values["MACHINIST_CONTROL_PLANE_URL"] = controlPlaneURL
+	}
+	for name, value := range values {
+		if value == "" {
+			delete(values, name)
+		}
+	}
+	return values
+}
+
+// normalizeRole matches roles the way the control plane does, so a role spelled
+// with different case or padding is still the role it names.
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
 }
