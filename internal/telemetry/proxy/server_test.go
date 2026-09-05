@@ -613,3 +613,93 @@ func value(pointer *string) string {
 	}
 	return *pointer
 }
+
+// hijackedUpstream answers with headers and some body, then tears the
+// connection down without finishing the response.
+//
+// This is what an upstream that dies mid-generation looks like from here, and
+// it is the one case where ReverseProxy abandons the forward by panicking.
+func hijackedUpstream(t *testing.T, prefix string) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		connection, buffered, err := response.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		// A chunked response whose chunks stop arriving. The length is a lie
+		// the connection then fails to make good on, which is precisely the
+		// upstream behaviour being reproduced.
+		_, _ = buffered.WriteString("HTTP/1.1 200 OK\r\n" +
+			"Content-Type: text/event-stream\r\n" +
+			"Content-Length: 4096\r\n\r\n" + prefix)
+		_ = buffered.Flush()
+		_ = connection.Close()
+	})
+}
+
+func TestACallAbandonedMidResponseIsStillReported(t *testing.T) {
+	// ReverseProxy panics with http.ErrAbortHandler when the body copy fails
+	// after the headers have gone out. Before this was handled the panic
+	// unwound past the reporting, and the call was left recorded as started
+	// and never finished — which is exactly what a hung agent looks like to a
+	// reader. A measurement that goes missing is worse than one that says the
+	// call failed, because only the second can be acted on.
+	front, sink, _ := proxied(t, hijackedUpstream(t, "data: {\"choices\":[]}\n\n"))
+
+	response, err := http.Post(front.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader("{}"))
+	if err == nil {
+		_, _ = io.ReadAll(response.Body)
+		response.Body.Close()
+	}
+
+	settled := sink.settled(t)
+	if settled.EventType != ModelFailed {
+		t.Fatalf("the abandoned call settled as %s, want %s", settled.EventType, ModelFailed)
+	}
+	if settled.Attributes["error_category"] != "upstream_transport" {
+		t.Fatalf("error_category = %v, want upstream_transport", settled.Attributes["error_category"])
+	}
+	if _, ok := settled.Attributes["duration_ms"].(float64); !ok {
+		t.Fatalf("the abandoned call carries no duration: %v", settled.Attributes)
+	}
+}
+
+func TestEveryForwardedCallSettlesExactlyOnce(t *testing.T) {
+	// The property the reporting rests on: a call with neither a completion nor
+	// a failure is still running. Two terminal events would double-count it,
+	// and none would strand it.
+	cases := map[string]http.Handler{
+		"an answer": http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = response.Write([]byte(`{"choices":[]}`))
+		}),
+		"a refusal": http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusTooManyRequests)
+		}),
+		"an abandoned response": hijackedUpstream(t, "data: {}\n\n"),
+	}
+	for name, upstream := range cases {
+		t.Run(name, func(t *testing.T) {
+			front, sink, _ := proxied(t, upstream)
+			response, err := http.Post(front.URL+"/v1/chat/completions", "application/json",
+				strings.NewReader("{}"))
+			if err == nil {
+				_, _ = io.ReadAll(response.Body)
+				response.Body.Close()
+			}
+			sink.settled(t)
+
+			terminal := 0
+			for _, eventType := range sink.types() {
+				if eventType == ModelCompleted || eventType == ModelFailed {
+					terminal++
+				}
+			}
+			if terminal != 1 {
+				t.Fatalf("%s produced %d terminal events: %v", name, terminal, sink.types())
+			}
+		})
+	}
+}
