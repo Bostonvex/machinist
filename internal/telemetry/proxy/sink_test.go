@@ -127,12 +127,19 @@ func TestTheSinkDeliversWhatItWasGiven(t *testing.T) {
 			t.Fatalf("event %d was dropped by an empty queue", index)
 		}
 	}
-	waitFor(t, func() bool { return upstream.total() == 5 }, "five events to arrive")
+	// Waited on the sink's own count, not the collector's. The collector
+	// records a batch before it answers, and the sink counts it as sent only
+	// after the answer arrives — so waiting on arrival can win the race
+	// against the counter that the assertion below is about.
+	waitFor(t, func() bool { return sink.Stats().Sent == 5 }, "five events to be delivered")
 
+	if upstream.total() != 5 {
+		t.Fatalf("the collector received %d events", upstream.total())
+	}
 	if token := upstream.tokens[0]; token != "Bearer collector-token" {
 		t.Fatalf("authorization = %q", token)
 	}
-	if stats := sink.Stats(); stats.Sent != 5 || stats.Dropped != 0 || stats.Failed != 0 {
+	if stats := sink.Stats(); stats.Dropped != 0 || stats.Failed != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
@@ -145,7 +152,7 @@ func TestTheSinkSendsBatchesTheCollectorWillAccept(t *testing.T) {
 	for index := 0; index < MaximumBatch*3; index++ {
 		sink.Enqueue(sample("span-" + itoa(index)))
 	}
-	waitFor(t, func() bool { return upstream.total() == MaximumBatch*3 }, "every event to arrive")
+	waitFor(t, func() bool { return sink.Stats().Sent == MaximumBatch*3 }, "every event to be delivered")
 
 	for _, batch := range upstream.received() {
 		if len(batch) > telemetry.DefaultMaximumBatch {
