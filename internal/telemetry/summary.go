@@ -164,10 +164,15 @@ type TimelineItem struct {
 	Scope string `json:"scope"`
 }
 
+// ErrInvalidIdentifier says a caller asked for something that is not an
+// identifier. It is a sentinel rather than a message so a handler can tell the
+// caller's mistake from the store's without matching on text.
+var ErrInvalidIdentifier = errors.New("not an identifier")
+
 // TurnDetail returns one turn, or false if there is no such turn.
 func (s *Store) TurnDetail(ctx context.Context, turnID string) (TurnDetail, bool, error) {
 	if turnID == "" || len(turnID) > maximumIdentifier {
-		return TurnDetail{}, false, fmt.Errorf("turn id is not an identifier")
+		return TurnDetail{}, false, fmt.Errorf("turn id is %w", ErrInvalidIdentifier)
 	}
 	row := s.read.QueryRowContext(ctx, `SELECT `+turnColumns+`
 		FROM turns t JOIN agents a ON a.id = t.agent_id WHERE t.id = ?`, turnID)

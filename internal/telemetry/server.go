@@ -24,6 +24,14 @@ const (
 	IngestPath = "/api/v1/events"
 	// HealthPath answers whether the collector is up and what it holds.
 	HealthPath = "/healthz"
+	// maximumCachedSummaries bounds the summary cache. Past this it is cleared
+	// rather than trimmed: the cache exists to absorb a few dashboards polling
+	// the same few windows, and one entry per distinct query string would be a
+	// way to spend this process's memory from a URL.
+	maximumCachedSummaries = 32
+	// defaultSampleLimit is the shared-reading page size. Samples arrive far
+	// more often than turns do, so their default page is smaller.
+	defaultSampleLimit = 200
 )
 
 // Server is the loopback ingest endpoint.
@@ -43,6 +51,17 @@ type Server struct {
 
 	purgeMutex sync.Mutex
 	lastPurge  time.Time
+
+	broker *broker
+
+	summaryMutex sync.Mutex
+	summaries    map[Filter]cachedSummary
+}
+
+// cachedSummary is one computed summary and when it was computed.
+type cachedSummary struct {
+	at      time.Time
+	summary FleetSummary
 }
 
 // NewServer builds the ingest handler. An empty token is refused: an
@@ -61,7 +80,10 @@ func NewServer(store *Store, token string, retention time.Duration, logger *log.
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{store: store, token: token, retention: retention, logger: logger, now: time.Now}, nil
+	return &Server{
+		store: store, token: token, retention: retention, logger: logger, now: time.Now,
+		broker: newBroker(), summaries: map[Filter]cachedSummary{},
+	}, nil
 }
 
 // Listen binds the collector to loopback. A host other than 127.0.0.1 is
@@ -81,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+IngestPath, s.ingest)
 	mux.HandleFunc("GET "+HealthPath, s.health)
+	s.readRoutes(mux)
 	return mux
 }
 
@@ -157,6 +180,9 @@ func (s *Server) ingest(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.maintainRetention(request.Context())
+	// Published after the write returned, so a live view never shows an event
+	// that a reader following it would then fail to find in the store.
+	s.broker.publish(events)
 
 	write(response, http.StatusAccepted, map[string]int{"accepted": len(events), "inserted": inserted})
 }
