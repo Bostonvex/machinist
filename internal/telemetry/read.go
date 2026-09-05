@@ -16,6 +16,7 @@ const (
 	TurnsPath      = "/api/v1/turns"
 	SamplesPath    = "/api/v1/samples"
 	DimensionsPath = "/api/v1/dimensions"
+	ExportPath     = "/api/v1/export.csv"
 	LivePath       = "/api/v1/live"
 )
 
@@ -46,6 +47,7 @@ func (s *Server) readRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+TurnsPath+"/{id}", s.readTurn)
 	mux.HandleFunc("GET "+SamplesPath, s.readSamples)
 	mux.HandleFunc("GET "+DimensionsPath, s.readDimensions)
+	mux.HandleFunc("GET "+ExportPath, s.exportTurns)
 	mux.HandleFunc("GET "+LivePath, s.live)
 }
 

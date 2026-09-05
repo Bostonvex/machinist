@@ -304,6 +304,38 @@ afterwards to show it. The confirmation is a flag rather than a prompt: this
 runs from launchd and cron at least as often as from a terminal, and a prompt
 there is not a question but a command that hangs.
 
+### Reading a collector
+
+The read routes answer on the collector's `listen` address and are not
+token-gated; the loopback bind is the boundary. They are the routes the Python
+collector served, at the same paths, so a dashboard or script pointed at either
+gets the same answers.
+
+```
+/api/v1/summary  /api/v1/agents  /api/v1/turns  /api/v1/turns/{id}
+/api/v1/samples  /api/v1/dimensions  /api/v1/live  /api/v1/export.csv
+```
+
+Every route takes the same filter: `agent`, `harness`, `model`, `endpoint`,
+`outcome`, `since` and `until`. A request that names no window gets a
+thirty-day one rather than the whole database, and a window wider than 180 days
+is refused rather than served.
+
+`/api/v1/export.csv` writes the selected turns as a CSV download, newest first,
+with the twenty columns the Python collector wrote in the order it wrote them —
+a spreadsheet or script saved against the old collector keeps working.
+
+Two things differ from that collector, both deliberate. An export larger than
+200,000 rows is refused with `413` before a byte is written, where the Python
+one silently capped the file at 500 rows: a truncated export of a busy month is
+indistinguishable from a complete export of a quiet one, and a refusal is at
+least an answer. And a string cell beginning `=`, `+`, `-`, `@`, a tab or a
+carriage return is prefixed with `'`, because every string in the file was named
+by an agent and a spreadsheet reads those as formulas. Measurements are
+formatted from numbers and are never prefixed, so a negative reading stays a
+number; a measurement the harness never took is an empty cell rather than a
+zero.
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`
