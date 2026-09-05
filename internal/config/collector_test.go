@@ -167,13 +167,21 @@ func TestAnUnknownCollectorFieldIsRefused(t *testing.T) {
 	}
 }
 
+// tomlPath writes a filesystem path into a TOML basic string. A Windows path
+// carries backslashes, which TOML reads as escape sequences: C:\Users parses
+// as an invalid \U, and the config is refused before the check under test is
+// ever reached. Go accepts forward slashes on every platform it builds for.
+func tomlPath(path string) string {
+	return filepath.ToSlash(path)
+}
+
 func TestTelemetryIsRefusedInTheControlPlaneDatabase(t *testing.T) {
 	// The two stores have opposite shapes. The collector's has its own
 	// retention and deletes on a timer; pointed at the control plane's file
 	// that sweep runs against the table of runs, and a backup of one is a
 	// backup of the other taken at a moment neither chose.
 	directory := t.TempDir()
-	shared := filepath.Join(directory, "machinist.db")
+	shared := tomlPath(filepath.Join(directory, "machinist.db"))
 	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
 	path := filepath.Join(directory, "config.toml")
 	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
@@ -201,10 +209,16 @@ func TestTheSharedDatabaseCheckSeesThroughASymlink(t *testing.T) {
 	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
 	path := filepath.Join(directory, "config.toml")
 	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
-		real+"\"\n\n"+enabledCollector+"database = \""+alias+"\"\n")
+		tomlPath(real)+"\"\n\n"+enabledCollector+"database = \""+tomlPath(alias)+"\"\n")
 
-	if _, err := LoadConfig(path); err == nil {
+	_, err := LoadConfig(path)
+	if err == nil {
 		t.Fatal("a symlink to the control plane's database was accepted")
+	}
+	// Any other refusal would pass this test without the alias ever being
+	// resolved, which is the one thing it exists to check.
+	if !strings.Contains(err.Error(), "same file") {
+		t.Fatalf("the alias was refused for some other reason: %v", err)
 	}
 }
 
@@ -215,8 +229,8 @@ func TestSeparateDatabasesAreAccepted(t *testing.T) {
 	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
 	path := filepath.Join(directory, "config.toml")
 	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
-		filepath.Join(directory, "machinist.db")+"\"\n\n"+enabledCollector+"database = \""+
-		filepath.Join(directory, "telemetry.db")+"\"\n")
+		tomlPath(filepath.Join(directory, "machinist.db"))+"\"\n\n"+enabledCollector+"database = \""+
+		tomlPath(filepath.Join(directory, "telemetry.db"))+"\"\n")
 
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatalf("two separate databases were refused: %v", err)
@@ -227,7 +241,7 @@ func TestADisabledCollectorDoesNotForceADatabaseChoice(t *testing.T) {
 	// A disabled collector opens nothing. Refusing a path it will never use
 	// would make the two settings harder to move than to have.
 	directory := t.TempDir()
-	shared := filepath.Join(directory, "machinist.db")
+	shared := tomlPath(filepath.Join(directory, "machinist.db"))
 	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
 	path := filepath.Join(directory, "config.toml")
 	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
