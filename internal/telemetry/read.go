@@ -43,6 +43,7 @@ const summaryCacheFor = derivedWindowStep
 func (s *Server) readRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+SummaryPath, s.readSummary)
 	mux.HandleFunc("GET "+AgentsPath, s.readAgents)
+	mux.HandleFunc("GET "+AgentsPath+"/{id}/summary", s.readAgentSummary)
 	mux.HandleFunc("GET "+TurnsPath, s.readTurns)
 	mux.HandleFunc("GET "+TurnsPath+"/{id}", s.readTurn)
 	mux.HandleFunc("GET "+SamplesPath, s.readSamples)
@@ -122,6 +123,27 @@ func (s *Server) readAgents(response http.ResponseWriter, request *http.Request)
 	agents, err := s.store.ListAgents(request.Context(), filter,
 		queryLimit(request.URL.Query(), defaultListLimit))
 	s.answer(response, "agents", map[string]any{"agents": agents}, err)
+}
+
+func (s *Server) readAgentSummary(response http.ResponseWriter, request *http.Request) {
+	filter, ok := s.filterFrom(response, request)
+	if !ok {
+		return
+	}
+	summary, found, err := s.store.AgentSummary(request.Context(), request.PathValue("id"), filter)
+	if err != nil {
+		if errors.Is(err, ErrInvalidIdentifier) {
+			write(response, http.StatusBadRequest, failure{Error: "invalid_agent_id"})
+			return
+		}
+		s.answer(response, "agent summary", nil, err)
+		return
+	}
+	if !found {
+		write(response, http.StatusNotFound, failure{Error: "agent_not_found"})
+		return
+	}
+	write(response, http.StatusOK, summary)
 }
 
 func (s *Server) readTurns(response http.ResponseWriter, request *http.Request) {

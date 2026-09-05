@@ -312,7 +312,8 @@ collector served, at the same paths, so a dashboard or script pointed at either
 gets the same answers.
 
 ```
-/api/v1/summary  /api/v1/agents  /api/v1/turns  /api/v1/turns/{id}
+/api/v1/summary  /api/v1/agents  /api/v1/agents/{id}/summary
+/api/v1/turns    /api/v1/turns/{id}
 /api/v1/samples  /api/v1/dimensions  /api/v1/live  /api/v1/export.csv
 ```
 
@@ -320,6 +321,14 @@ Every route takes the same filter: `agent`, `harness`, `model`, `endpoint`,
 `outcome`, `since` and `until`. A request that names no window gets a
 thirty-day one rather than the whole database, and a window wider than 180 days
 is refused rather than served.
+
+`/api/v1/agents/{id}/summary` answers for one agent: the agent itself, the
+aggregate over its turns in the window, and those turns. The agent is looked up
+without the window and its turns with it, so narrowing the window makes an agent
+idle rather than absent — a 404 there would say the agent is gone when it merely
+did nothing this hour. The path names the agent, and a contradicting `agent=`
+query parameter cannot override it: answering for one agent under another's name
+is the one wrong answer nothing on the page would reveal.
 
 `/api/v1/export.csv` writes the selected turns as a CSV download, newest first,
 with the twenty columns the Python collector wrote in the order it wrote them —
