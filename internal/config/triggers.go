@@ -360,3 +360,20 @@ func triggerSignature(trigger ResolvedTrigger) (string, error) {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+// LoadGitHubRepositories resolves the [github.repositories] table: the logical
+// repository name a worker registers a checkout under, to the OWNER/REPO slug
+// GitHub knows the same repository by.
+//
+// It is loaded separately from the triggers because the mapping is not a
+// trigger's property. A deployment can run no GitHub trigger at all and still
+// need the slug — a review submitted against a run has to name the change it
+// judged to the forge — and reading it off a trigger would make that lookup
+// depend on a trigger existing.
+func LoadGitHubRepositories(path string) (map[string]string, error) {
+	definition, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return resolveGitHubRepositories(definition.GitHub.Repositories)
+}

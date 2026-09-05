@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -75,9 +76,18 @@ func (s *Server) submitReview(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusServiceUnavailable, errors.New("no github client: the changed paths of a review cannot be read"))
 		return
 	}
-	changedPaths, err := s.pullRequests.ListPullRequestFiles(request.Context(), subject.Repository, input.PullRequest)
+	// Answered like a missing github client above, and for the same reason:
+	// in both cases the control plane cannot read the change, and in neither
+	// is that the reviewer's doing or something it can retry its way out of.
+	repository, err := s.gitHubRepositoryFor(subject.Repository)
 	if err != nil {
-		log.Printf("review run %q: read pull request %d files: %v", reviewedRun, input.PullRequest, err)
+		log.Printf("review run %q: %v", reviewedRun, err)
+		writeError(response, http.StatusServiceUnavailable, err)
+		return
+	}
+	changedPaths, err := s.pullRequests.ListPullRequestFiles(request.Context(), repository, input.PullRequest)
+	if err != nil {
+		log.Printf("review run %q: read %s pull request %d files: %v", reviewedRun, repository, input.PullRequest, err)
 		writeError(response, http.StatusBadGateway, errors.New("read the reviewed pull request"))
 		return
 	}
@@ -116,4 +126,30 @@ func (s *Server) submitReview(response http.ResponseWriter, request *http.Reques
 		ProtectedPaths: outcome.ProtectedPaths,
 		Reasons:        outcome.Reasons,
 	})
+}
+
+// ErrRepositoryUnmapped is returned when a run names a repository that no
+// [github.repositories] entry resolves to a forge slug.
+var ErrRepositoryUnmapped = errors.New("repository has no github.repositories entry")
+
+// gitHubRepositoryFor turns the repository a run records into the OWNER/REPO
+// slug the forge knows it by.
+//
+// A run stores the logical name its worker registered a checkout under —
+// "machinist", not "Bostonvex/machinist". Handing that name to the forge asks
+// GitHub for a repository owned by nobody, and the 404 that comes back reads
+// like a missing pull request rather than a missing mapping, so a review that
+// judged a real change is refused for a reason nobody can act on.
+//
+// The mapping is operator configuration, so an unmapped repository is refused
+// and named rather than guessed at. Falling back to the logical name would put
+// the unreadable 404 back; falling back to a slug assembled from some default
+// owner would ask the forge about a repository nobody configured, and could
+// read the diff of a stranger's change under the same name.
+func (s *Server) gitHubRepositoryFor(repository string) (string, error) {
+	slug, ok := s.githubRepositories[repository]
+	if !ok {
+		return "", fmt.Errorf("%w: %q", ErrRepositoryUnmapped, repository)
+	}
+	return slug, nil
 }
