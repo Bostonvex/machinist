@@ -78,7 +78,12 @@ func NewNvidia(nodeID, remoteHost string, timeout time.Duration, run Runner) (*N
 	if err != nil {
 		return nil, err
 	}
-	provider.name = "nvidia-smi-remote"
+	// The name carries the node because it keys the supervisor's status row,
+	// and a deployment can reach more than one remote node. Two of them under
+	// one name would share that row, and an operator reading a failure could
+	// not tell which machine had stopped answering -- which is the whole
+	// content of the reading.
+	provider.name = "nvidia-smi-remote:" + nodeID
 	seconds := int(min(max(timeout.Seconds(), 1), 30))
 	provider.argv = []string{binary,
 		"-o", "BatchMode=yes",

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ retention = "9000h"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if collector != (Collector{}) {
+	if !reflect.DeepEqual(collector, Collector{}) {
 		t.Fatalf("collector = %#v", collector)
 	}
 }
@@ -141,7 +142,7 @@ metrics_url = "http://127.0.0.1:18000/metrics"
 	if collector.Nvidia == nil || collector.Nvidia.NodeID != "local-nvidia" {
 		t.Errorf("nvidia = %#v", collector.Nvidia)
 	}
-	if collector.NvidiaRemote == nil || collector.NvidiaRemote.NodeID != "remote-nvidia" {
+	if len(collector.NvidiaRemote) != 1 || collector.NvidiaRemote[0].NodeID != "remote-nvidia" {
 		t.Errorf("nvidia_remote = %#v", collector.NvidiaRemote)
 	}
 	if collector.Vllm == nil || collector.Vllm.EndpointID != "vllm-primary" {
@@ -156,7 +157,7 @@ func TestUnconfiguredProvidersAreAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if collector.Vllm != nil || collector.Nvidia != nil || collector.NvidiaRemote != nil {
+	if collector.Vllm != nil || collector.Nvidia != nil || len(collector.NvidiaRemote) != 0 {
 		t.Fatalf("collector = %#v", collector)
 	}
 }
@@ -249,5 +250,158 @@ func TestADisabledCollectorDoesNotForceADatabaseChoice(t *testing.T) {
 
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatalf("a disabled collector was refused for a path it never opens: %v", err)
+	}
+}
+
+// The deployment this was written for reaches two GB10 nodes. Before this, the
+// table named one of them and the other was invisible -- which is the one state
+// indistinguishable from idle.
+func TestEveryRemoteNodeThatIsNamedIsPolled(t *testing.T) {
+	collector, err := collectorConfig(t, enabledCollector+`
+[[collector.nvidia_remote]]
+node_id = "spark-0e9f"
+ssh_host = "spark-0e9f"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+ssh_host = "spark-27c2"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(collector.NvidiaRemote) != 2 {
+		t.Fatalf("nvidia_remote = %#v", collector.NvidiaRemote)
+	}
+	for index, want := range []CollectorNvidia{
+		{NodeID: "spark-0e9f", SSHHost: "spark-0e9f"},
+		{NodeID: "spark-27c2", SSHHost: "spark-27c2"},
+	} {
+		if collector.NvidiaRemote[index] != want {
+			t.Errorf("node %d = %#v, want %#v", index, collector.NvidiaRemote[index], want)
+		}
+	}
+}
+
+// A deployment with one remote node should not have to be rewritten to stay
+// where it is. Both spellings mean the same thing and neither is deprecated.
+func TestOneRemoteNodeMayBeWrittenEitherWay(t *testing.T) {
+	for name, body := range map[string]string{
+		"single table":   "\n[collector.nvidia_remote]\nnode_id = \"spark\"\nssh_host = \"spark.local\"\n",
+		"table array":    "\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"spark.local\"\n",
+		"inline table":   "\nnvidia_remote = {node_id = \"spark\", ssh_host = \"spark.local\"}\n",
+		"inline array":   "\nnvidia_remote = [{node_id = \"spark\", ssh_host = \"spark.local\"}]\n",
+		"array with one": "\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"spark.local\"\n",
+		// Padding is not part of a name. A node stored under " spark " is one
+		// the operator would search the board for as "spark" and not find, and
+		// nvidia-smi would refuse the destination at start rather than at load.
+		"padded": "\n[[collector.nvidia_remote]]\nnode_id = \" spark \"\nssh_host = \"  spark.local\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			collector, err := collectorConfig(t, enabledCollector+body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []CollectorNvidia{{NodeID: "spark", SSHHost: "spark.local"}}
+			if !reflect.DeepEqual([]CollectorNvidia(collector.NvidiaRemote), want) {
+				t.Fatalf("nvidia_remote = %#v", collector.NvidiaRemote)
+			}
+		})
+	}
+}
+
+// The invariant the old one-table-only rule was protecting. Two nodes under one
+// name share a status row, and an operator reading a failure cannot tell which
+// machine stopped answering.
+func TestTwoGPUNodesMayNotShareAName(t *testing.T) {
+	for name, body := range map[string]string{
+		"two remote nodes": "\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"a\"\n\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"b\"\n",
+		// The local table is in the same namespace: a sample carries a node_id
+		// and nothing that says whether it was read here or over SSH.
+		"remote taking the local name":    "\n[collector.nvidia]\nnode_id = \"spark\"\n\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"b\"\n",
+		"remote taking the local default": "\n[collector.nvidia]\n\n[[collector.nvidia_remote]]\nnode_id = \"local-nvidia\"\nssh_host = \"b\"\n",
+		// Two names that differ only in padding are one name to the person
+		// reading the board, and the collision has to be found where it can
+		// still be explained.
+		"names differing only in padding":          "\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"a\"\n\n[[collector.nvidia_remote]]\nnode_id = \" spark \"\nssh_host = \"b\"\n",
+		"the local name differing only in padding": "\n[collector.nvidia]\nnode_id = \" spark \"\n\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"b\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := collectorConfig(t, enabledCollector+body)
+			if err == nil {
+				t.Fatal("two nodes were accepted under one name")
+			}
+			if !strings.Contains(err.Error(), "node_id") {
+				t.Fatalf("error = %v, want it to name the field that collided", err)
+			}
+		})
+	}
+}
+
+// "remote-nvidia" is a name for the remote node, which is only a name while
+// there is one of them. Defaulting past that would hand two machines one
+// identity on the operator's behalf, and the refusal above would then report a
+// collision between two lines that say nothing about a node_id at all.
+func TestMoreThanOneRemoteNodeMustBeNamedExplicitly(t *testing.T) {
+	_, err := collectorConfig(t, enabledCollector+`
+[[collector.nvidia_remote]]
+ssh_host = "a"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+ssh_host = "b"
+`)
+	if err == nil {
+		t.Fatal("an unnamed node was accepted alongside another")
+	}
+	if !strings.Contains(err.Error(), "node_id is required") {
+		t.Fatalf("error = %v, want it to ask for the name", err)
+	}
+}
+
+// Every entry is checked, not just the first. A host missing from the second
+// node is a node that is configured, never polled, and reported as nothing.
+func TestEveryRemoteNodeNeedsItsOwnHost(t *testing.T) {
+	_, err := collectorConfig(t, enabledCollector+`
+[[collector.nvidia_remote]]
+node_id = "spark-0e9f"
+ssh_host = "spark-0e9f"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+`)
+	if err == nil {
+		t.Fatal("a remote node with no host was accepted")
+	}
+	if !strings.Contains(err.Error(), "ssh_host") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// The outer decoder's strictness does not reach inside a type that unmarshals
+// itself, so the type re-applies it. Every other line of this config file is
+// refused when it names a field nothing reads, and a node is not the place for
+// that to stop being true: an ssh_port nobody honours is a connection an
+// operator believes they configured.
+//
+// The node is otherwise complete. A key written *instead of* ssh_host would be
+// refused anyway by the requirement that a remote node name a host, which is a
+// different check -- and a check only ever reached through another check can be
+// deleted without a test noticing.
+func TestAFieldARemoteNodeDoesNotHaveIsRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"table array":  "\n[[collector.nvidia_remote]]\nnode_id = \"spark\"\nssh_host = \"spark.local\"\nssh_port = 2222\n",
+		"single table": "\n[collector.nvidia_remote]\nnode_id = \"spark\"\nssh_host = \"spark.local\"\nssh_port = 2222\n",
+		"inline table": "\nnvidia_remote = {node_id = \"spark\", ssh_host = \"spark.local\", ssh_port = 2222}\n",
+		"inline array": "\nnvidia_remote = [{node_id = \"spark\", ssh_host = \"spark.local\", ssh_port = 2222}]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := collectorConfig(t, enabledCollector+body)
+			if err == nil {
+				t.Fatal("a field the node does not have was accepted")
+			}
+			if !strings.Contains(err.Error(), "strict") {
+				t.Fatalf("error = %v, want it to refuse the field rather than something else", err)
+			}
+		})
 	}
 }

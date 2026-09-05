@@ -124,10 +124,13 @@ func collectorProviders(collectorConfig config.Collector) ([]provider.Provider, 
 		}
 		providers = append(providers, polled)
 	}
-	if nvidia := collectorConfig.NvidiaRemote; nvidia != nil {
+	for _, nvidia := range collectorConfig.NvidiaRemote {
 		polled, err := provider.NewNvidia(nvidia.NodeID, nvidia.SSHHost, providerTimeout, nil)
 		if err != nil {
-			return nil, fmt.Errorf("collector.nvidia_remote: %w", err)
+			// The node is named in the error. With more than one remote node
+			// configured, "collector.nvidia_remote" alone would send an
+			// operator to read every one of them.
+			return nil, fmt.Errorf("collector.nvidia_remote %q: %w", nvidia.NodeID, err)
 		}
 		providers = append(providers, polled)
 	}

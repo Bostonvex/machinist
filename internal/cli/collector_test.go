@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/telemetry"
+	"github.com/owainlewis/machinist/internal/telemetry/provider"
 )
 
 // collectorSetup writes a Machinist config whose [collector] section is the
@@ -146,4 +148,53 @@ func startedCollector(t *testing.T, collectorConfig config.Collector) string {
 		t.Fatal("the collector never reported an address")
 	}
 	return ""
+}
+
+// Two remote nodes have to reach the supervisor as two providers it will
+// accept. The supervisor refuses two providers under one name -- which is the
+// same invariant the config enforces on node_id -- so a config that permits two
+// nodes and a provider name that does not distinguish them would produce a
+// collector that loads its configuration and then refuses to start.
+func TestEveryConfiguredRemoteNodeBecomesItsOwnProvider(t *testing.T) {
+	built, err := collectorProviders(config.Collector{
+		NvidiaRemote: config.CollectorNvidiaNodes{
+			{NodeID: "spark-0e9f", SSHHost: "spark-0e9f"},
+			{NodeID: "spark-27c2", SSHHost: "spark-27c2"},
+		},
+	})
+	if err != nil {
+		t.Skipf("no ssh on this machine: %v", err)
+	}
+	if len(built) != 2 {
+		t.Fatalf("built %d providers for two nodes", len(built))
+	}
+	names := []string{built[0].Name(), built[1].Name()}
+	if names[0] == names[1] {
+		t.Fatalf("both nodes report as %q", names[0])
+	}
+	for index, node := range []string{"spark-0e9f", "spark-27c2"} {
+		if !strings.Contains(names[index], node) {
+			t.Errorf("provider %d is named %q, which does not say which machine it reads", index, names[index])
+		}
+	}
+	if _, err := provider.NewSupervisor(built, func(context.Context, []telemetry.Event) {}, time.Second, "test", nil); err != nil {
+		t.Fatalf("a supervisor refused the providers for two configured nodes: %v", err)
+	}
+}
+
+// The node is named in the error. With more than one remote node configured,
+// "collector.nvidia_remote" alone sends an operator to read every one of them.
+func TestAnUnbuildableRemoteNodeSaysWhichOne(t *testing.T) {
+	_, err := collectorProviders(config.Collector{
+		NvidiaRemote: config.CollectorNvidiaNodes{
+			{NodeID: "spark-0e9f", SSHHost: "spark-0e9f"},
+			{NodeID: "spark-27c2", SSHHost: "-oProxyCommand=touch /tmp/x"},
+		},
+	})
+	if err == nil {
+		t.Fatal("a destination that could become an option was accepted")
+	}
+	if !strings.Contains(err.Error(), "spark-27c2") {
+		t.Fatalf("error = %v, want it to name the node that could not be built", err)
+	}
 }

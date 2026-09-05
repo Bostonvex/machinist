@@ -383,6 +383,12 @@ func loadConfigFile(path string) (Config, error) {
 	machinistConfig := Config{path: absPath}
 	decoder := toml.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
+	// One type in the config decodes itself: [collector.nvidia_remote], which
+	// has to accept both a single table and a table array. Nothing else
+	// implements the interface, so this changes only that field -- and the
+	// unmarshaler re-applies the strictness above, which does not reach inside
+	// it.
+	decoder.EnableUnmarshalerInterface()
 	if err := decoder.Decode(&machinistConfig); err != nil {
 		return Config{}, fmt.Errorf("parse Machinist config %q: %w", absPath, err)
 	}
