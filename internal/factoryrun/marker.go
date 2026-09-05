@@ -5,10 +5,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/owainlewis/machinist/internal/review"
 )
 
 // MarkerKey identifies the FACTORY:RUN handoff marker in an issue comment.
 const MarkerKey = "FACTORY:RUN"
+
+// markerAnchor is the HTML comment that opens a rendered marker. Parsing is
+// anchored on it so prose that merely mentions FACTORY:RUN is never read back
+// as machine evidence.
+const markerAnchor = "<!-- machinist:" + MarkerKey + " -->"
 
 // Render produces the marker comment body. It is deterministic (checks are
 // sorted) so parse(Render(e)) is a stable round trip.
@@ -25,7 +32,7 @@ func Render(e Evidence) (string, error) {
 		return checks[i].State < checks[j].State
 	})
 	var b strings.Builder
-	fmt.Fprintf(&b, "<!-- machinist:%s -->\n", MarkerKey)
+	fmt.Fprintf(&b, "%s\n", markerAnchor)
 	fmt.Fprintf(&b, "repo: %s\n", e.Repo)
 	fmt.Fprintf(&b, "job: %s\n", e.JobID)
 	fmt.Fprintf(&b, "run: %s\n", e.RunID)
@@ -38,12 +45,14 @@ func Render(e Evidence) (string, error) {
 	if e.PR != "" {
 		fmt.Fprintf(&b, "pr: %s\n", e.PR)
 	}
-	fmt.Fprintf(&b, "verdict: %s\n", e.Verdict)
+	if e.Verdict != "" {
+		fmt.Fprintf(&b, "verdict: %s\n", e.Verdict)
+	}
 	if len(e.Issues) > 0 {
 		fmt.Fprintf(&b, "issues: %s\n", strings.Join(e.Issues, ","))
 	}
 	for _, c := range checks {
-		line := c.Name + ":" + c.State
+		line := c.Name + ":" + string(c.State)
 		if c.DetailsURL != "" {
 			line += ":" + c.DetailsURL
 		}
@@ -56,13 +65,15 @@ func Render(e Evidence) (string, error) {
 }
 
 // Parse reads a marker body back into an Evidence. It tolerates a whole-comment
-// body (it extracts only marker lines).
+// body: it reads only the lines that follow the marker anchor, so a comment
+// that merely names the marker carries no evidence.
 func Parse(body string) (Evidence, error) {
 	var e Evidence
-	if !strings.Contains(body, MarkerKey) {
+	_, rest, ok := strings.Cut(body, markerAnchor)
+	if !ok {
 		return e, fmt.Errorf("factoryrun: no %s marker", MarkerKey)
 	}
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range strings.Split(rest, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -87,29 +98,50 @@ func Parse(body string) (Evidence, error) {
 		case "pr":
 			e.PR = value
 		case "verdict":
-			e.Verdict = value
+			e.Verdict = review.Verdict(value)
 		case "issues":
 			e.Issues = splitCSV(value)
 		case "check":
-			parts := strings.SplitN(value, ":", 3)
-			c := Check{Name: parts[0], State: "success"}
-			if len(parts) > 1 {
-				c.State = parts[1]
-			}
-			if len(parts) > 2 {
-				c.DetailsURL = parts[2]
+			c, err := parseCheck(value)
+			if err != nil {
+				return e, err
 			}
 			e.Checks = append(e.Checks, c)
 		case "updated_at":
-			if t, err := time.Parse(time.RFC3339, value); err == nil {
-				e.UpdatedAt = t
+			t, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				return e, fmt.Errorf("factoryrun: updated_at %q: %w", value, err)
 			}
+			e.UpdatedAt = t
 		}
 	}
 	if err := e.Validate(); err != nil {
 		return e, err
 	}
 	return e, nil
+}
+
+// parseCheck reads one "name:state[:url]" check line. The state is required:
+// a truncated or hand-edited line is an error, never a passing check.
+func parseCheck(value string) (Check, error) {
+	parts := strings.SplitN(value, ":", 3)
+	if len(parts) < 2 {
+		return Check{}, fmt.Errorf("factoryrun: check %q has no state", value)
+	}
+	c := Check{
+		Name:  strings.TrimSpace(parts[0]),
+		State: CheckState(strings.TrimSpace(parts[1])),
+	}
+	if len(parts) > 2 {
+		c.DetailsURL = strings.TrimSpace(parts[2])
+	}
+	if c.Name == "" {
+		return Check{}, fmt.Errorf("factoryrun: check %q has no name", value)
+	}
+	if !c.State.Valid() {
+		return Check{}, fmt.Errorf("factoryrun: check %q has unknown state %q", c.Name, c.State)
+	}
+	return c, nil
 }
 
 func splitCSV(value string) []string {
