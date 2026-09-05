@@ -36,6 +36,28 @@ func (r *recorder) types() []string {
 	return names
 }
 
+// settled waits for the event that ends a call.
+//
+// The client's request returns when the headers arrive; the proxy finishes
+// measuring after the body has been copied. Without waiting, a test would be
+// asserting on whichever of the two happened to win, which is a test that
+// passes or fails for a reason unrelated to what it is about.
+func (r *recorder) settled(t *testing.T) Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if event, ok := r.last(ModelCompleted); ok {
+			return event
+		}
+		if event, ok := r.last(ModelFailed); ok {
+			return event
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no call ever finished; events = %v", r.types())
+	return Event{}
+}
+
 func (r *recorder) last(eventType string) (Event, bool) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -213,13 +235,13 @@ func TestTheProxyMeasuresAForwardedCall(t *testing.T) {
 		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write([]byte(`{"ok":true}`))
 	}))
-	post(t, front, "/v1/chat/completions", "{}", nil)
+	drain(t, front, "/v1/chat/completions")
+	completed := sink.settled(t)
 
 	types := sink.types()
 	if len(types) != 2 || types[0] != ModelRequestStarted || types[1] != ModelCompleted {
 		t.Fatalf("events = %v, want a start and a completion", types)
 	}
-	completed, _ := sink.last(ModelCompleted)
 	if completed.Attributes["http_status"] != 200 {
 		t.Fatalf("http_status = %v", completed.Attributes["http_status"])
 	}
@@ -254,8 +276,8 @@ func TestAnUpstreamErrorIsAnAnsweredCallAndNotALostOne(t *testing.T) {
 	if !strings.Contains(string(body), "slow down") {
 		t.Fatalf("the upstream's error body was not preserved: %q", body)
 	}
-	failed, ok := sink.last(ModelFailed)
-	if !ok {
+	failed := sink.settled(t)
+	if failed.EventType != ModelFailed {
 		t.Fatalf("events = %v, want a failure", sink.types())
 	}
 	if failed.Attributes["error_category"] != "upstream_http" {
@@ -296,8 +318,8 @@ func TestAnUnreachableUpstreamIsRefusedWithoutNamingIt(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("the refusal is not the shape a model client renders: %q", body)
 	}
-	failed, ok := sink.last(ModelFailed)
-	if !ok {
+	failed := sink.settled(t)
+	if failed.EventType != ModelFailed {
 		t.Fatalf("events = %v, want a failure", sink.types())
 	}
 	if failed.Attributes["error_category"] != "upstream_transport" {
@@ -421,5 +443,163 @@ func TestAProxyWithNoCollectorStillForwards(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	if string(body) != "ok" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+// sseUpstream writes each event as one flushed SSE frame, pausing between them
+// so the recorded times can tell one frame from the next.
+func sseUpstream(events ...string) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/event-stream")
+		response.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			_, _ = response.Write([]byte("data: " + event + "\n\n"))
+			response.(http.Flusher).Flush()
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+}
+
+func drain(t *testing.T, server *httptest.Server, path string) string {
+	t.Helper()
+	response := post(t, server, path, "{}", nil)
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	return string(body)
+}
+
+func TestAStreamedCallIsMeasuredFromItsContent(t *testing.T) {
+	front, sink, _ := proxied(t, sseUpstream(
+		`{"choices":[{"delta":{"role":"assistant"}}]}`,
+		`{"choices":[{"delta":{"content":"Hello"}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":5,`+
+			`"prompt_tokens_details":{"cached_tokens":16}}}`,
+		`[DONE]`,
+	))
+
+	body := drain(t, front, "/v1/chat/completions")
+	if !strings.Contains(body, "Hello") || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("the stream did not arrive intact: %q", body)
+	}
+	completed := sink.settled(t)
+
+	types := sink.types()
+	want := []string{ModelRequestStarted, ModelFirstToken, ModelCompleted}
+	if len(types) != len(want) {
+		t.Fatalf("events = %v, want %v", types, want)
+	}
+	for index, name := range want {
+		if types[index] != name {
+			t.Fatalf("events = %v, want %v", types, want)
+		}
+	}
+
+	first, _ := sink.last(ModelFirstToken)
+	elapsed, ok := first.Attributes["elapsed_ms"].(float64)
+	if !ok || elapsed <= 0 {
+		t.Fatalf("elapsed_ms = %v, want the time up to the first content chunk", first.Attributes["elapsed_ms"])
+	}
+
+	for name, want := range map[string]any{"input_tokens": 31, "output_tokens": 5, "cached_tokens": 16} {
+		if completed.Attributes[name] != want {
+			t.Fatalf("%s = %v, want %v", name, completed.Attributes[name], want)
+		}
+	}
+	decode, ok := completed.Attributes["decode_ms"].(float64)
+	if !ok || decode <= 0 {
+		t.Fatalf("decode_ms = %v, want the time spent generating", completed.Attributes["decode_ms"])
+	}
+	if duration := completed.Attributes["duration_ms"].(float64); decode > duration {
+		t.Fatalf("decode_ms %v exceeds duration_ms %v", decode, duration)
+	}
+	if first.SpanID != completed.SpanID {
+		t.Fatal("the first token and the completion are not the same call")
+	}
+}
+
+func TestFirstTokenIsReportedOnceEvenThoughTheStreamKeepsGenerating(t *testing.T) {
+	front, sink, _ := proxied(t, sseUpstream(
+		`{"choices":[{"delta":{"content":"a"}}]}`,
+		`{"choices":[{"delta":{"content":"b"}}]}`,
+		`{"choices":[{"delta":{"content":"c"}}]}`,
+	))
+	drain(t, front, "/v1/chat/completions")
+	sink.settled(t)
+
+	var count int
+	for _, name := range sink.types() {
+		if name == ModelFirstToken {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("model.first_token was reported %d times", count)
+	}
+}
+
+func TestAStreamThatFailsAfterATwoHundredIsRecordedAsAFailure(t *testing.T) {
+	// The status line is written before the model has produced anything, so it
+	// cannot be the last word on whether the call worked.
+	front, sink, _ := proxied(t, sseUpstream(
+		`{"choices":[{"delta":{"content":"partial"}}]}`,
+		`{"type":"error","error":{"type":"overloaded_error"}}`,
+	))
+	response := post(t, front, "/v1/chat/completions", "{}", nil)
+	body, _ := io.ReadAll(response.Body)
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: the proxy must not rewrite what the upstream sent", response.StatusCode)
+	}
+	if !strings.Contains(string(body), "overloaded_error") {
+		t.Fatalf("the error event did not reach the client: %q", body)
+	}
+	failed := sink.settled(t)
+	if failed.EventType != ModelFailed {
+		t.Fatalf("events = %v, want a failure", sink.types())
+	}
+	if failed.Attributes["error_category"] != "stream_error" {
+		t.Fatalf("error_category = %v", failed.Attributes["error_category"])
+	}
+	if failed.Attributes["error_code"] != "overloaded_error" {
+		t.Fatalf("error_code = %v", failed.Attributes["error_code"])
+	}
+	if failed.Attributes["http_status"] != 200 {
+		t.Fatalf("http_status = %v, want what the upstream actually sent", failed.Attributes["http_status"])
+	}
+}
+
+func TestANonStreamingCallReportsItsTokensAndNoDecodeTime(t *testing.T) {
+	front, sink, _ := proxied(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],` +
+			`"usage":{"prompt_tokens":7,"completion_tokens":2}}`))
+	}))
+	drain(t, front, "/v1/chat/completions")
+	completed := sink.settled(t)
+
+	if completed.EventType != ModelCompleted {
+		t.Fatalf("events = %v", sink.types())
+	}
+	if completed.Attributes["input_tokens"] != 7 || completed.Attributes["output_tokens"] != 2 {
+		t.Fatalf("tokens = %v/%v", completed.Attributes["input_tokens"], completed.Attributes["output_tokens"])
+	}
+	if _, present := completed.Attributes["decode_ms"]; present {
+		t.Fatal("a body delivered in one piece was given a decode time it cannot have")
+	}
+}
+
+func TestAnUpstreamThatSaysNothingAboutTokensProducesNoTokenAttributes(t *testing.T) {
+	front, sink, _ := proxied(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = response.Write([]byte(`{"choices":[]}`))
+	}))
+	drain(t, front, "/v1/chat/completions")
+	completed := sink.settled(t)
+
+	for _, name := range []string{"input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens"} {
+		if _, present := completed.Attributes[name]; present {
+			t.Fatalf("%s was reported for a call nothing said anything about", name)
+		}
 	}
 }
