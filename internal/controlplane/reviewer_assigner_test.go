@@ -324,6 +324,31 @@ func TestAssignReviewRefusesACommandThatIsNotAReviewer(t *testing.T) {
 	}
 }
 
+// Review assignment accepts the reviewer role the same way independence
+// checking and lease handover do: an oddly-but-validly spelled reviewer is
+// still a reviewer, while an implementer never is. The rule lives once in
+// internal/review and every call site obeys it.
+func TestAssignReviewUsesTheSharedRoleRule(t *testing.T) {
+	fixture := newAssignerFixture(t, oneReviewerOnClaude)
+	reviewer := func(role string) config.ResolvedCommand {
+		return config.ResolvedCommand{Name: "judge", Profile: "claude-reviewer", Role: role, Timeout: time.Minute}
+	}
+	if _, err := fixture.store.AssignReview(t.Context(), ReviewAssignmentCandidate{
+		RunID: fixture.runID, Repository: "machinist", IssueNumber: 396, Agent: "codex-implementer",
+	}, 42, reviewer("  REVIEWER  ")); err != nil {
+		t.Fatalf("oddly-spelled reviewer was refused: %v", err)
+	}
+	if assigned := fixture.assignedReviews(t); len(assigned) != 1 {
+		t.Fatalf("assigned %d reviews to an oddly-spelled reviewer, want 1", len(assigned))
+	}
+	implementer := reviewer(review.RoleImplementer)
+	if _, err := fixture.store.AssignReview(t.Context(), ReviewAssignmentCandidate{
+		RunID: fixture.runID, Repository: "machinist", IssueNumber: 396, Agent: "codex-implementer",
+	}, 43, implementer); err == nil {
+		t.Fatal("an implementer was accepted as a reviewer")
+	}
+}
+
 // The assigner and the review route have to agree, or assignment queues work
 // that is refused when it arrives. A run assigned by one is accepted by the
 // other: same repository, reviewer role, and an agent that is not the author.
