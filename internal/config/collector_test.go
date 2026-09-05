@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -163,5 +164,76 @@ func TestUnconfiguredProvidersAreAbsent(t *testing.T) {
 func TestAnUnknownCollectorFieldIsRefused(t *testing.T) {
 	if _, err := collectorConfig(t, enabledCollector+"retention_days = 7\n"); err == nil {
 		t.Fatal("an unknown collector field was accepted")
+	}
+}
+
+func TestTelemetryIsRefusedInTheControlPlaneDatabase(t *testing.T) {
+	// The two stores have opposite shapes. The collector's has its own
+	// retention and deletes on a timer; pointed at the control plane's file
+	// that sweep runs against the table of runs, and a backup of one is a
+	// backup of the other taken at a moment neither chose.
+	directory := t.TempDir()
+	shared := filepath.Join(directory, "machinist.db")
+	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
+		shared+"\"\n\n"+enabledCollector+"database = \""+shared+"\"\n")
+
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("telemetry was accepted into the control plane's database")
+	}
+	if !strings.Contains(err.Error(), "same file") {
+		t.Fatalf("the refusal does not say what is wrong: %v", err)
+	}
+}
+
+func TestTheSharedDatabaseCheckSeesThroughASymlink(t *testing.T) {
+	// Two names for one file is the case being caught. Comparing the strings
+	// would miss exactly the configuration that looks most correct.
+	directory := t.TempDir()
+	real := filepath.Join(directory, "machinist.db")
+	writeTestFile(t, real, "")
+	alias := filepath.Join(directory, "telemetry.db")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
+		real+"\"\n\n"+enabledCollector+"database = \""+alias+"\"\n")
+
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("a symlink to the control plane's database was accepted")
+	}
+}
+
+func TestSeparateDatabasesAreAccepted(t *testing.T) {
+	// The check must not be a refusal of the ordinary case. On a fresh install
+	// neither file exists yet, which is the path with nothing to resolve.
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
+		filepath.Join(directory, "machinist.db")+"\"\n\n"+enabledCollector+"database = \""+
+		filepath.Join(directory, "telemetry.db")+"\"\n")
+
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("two separate databases were refused: %v", err)
+	}
+}
+
+func TestADisabledCollectorDoesNotForceADatabaseChoice(t *testing.T) {
+	// A disabled collector opens nothing. Refusing a path it will never use
+	// would make the two settings harder to move than to have.
+	directory := t.TempDir()
+	shared := filepath.Join(directory, "machinist.db")
+	writeTestFile(t, filepath.Join(directory, "worker.token"), strings.Repeat("t", 40)+"\n")
+	path := filepath.Join(directory, "config.toml")
+	writeTestFile(t, path, "[server]\nworker_token_file = \"worker.token\"\ndatabase = \""+
+		shared+"\"\n\n[collector]\nenabled = false\ndatabase = \""+shared+"\"\n")
+
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("a disabled collector was refused for a path it never opens: %v", err)
 	}
 }

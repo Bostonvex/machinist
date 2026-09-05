@@ -290,7 +290,59 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err := refuseSharedDatabase(machinistConfig.Server.Database, machinistConfig.Collector); err != nil {
+		return Config{}, err
+	}
 	return machinistConfig, nil
+}
+
+// refuseSharedDatabase keeps telemetry out of the control plane's database.
+//
+// The two stores have opposite shapes. The control plane's is small,
+// transactional, and the record of what work exists; the collector's is a
+// high-volume append-only stream with its own retention that deletes from it on
+// a timer. Pointed at one file, the retention sweep runs against the table of
+// runs, and a backup of one is a backup of the other taken at a moment neither
+// chose.
+//
+// It is refused at load rather than at either store's open, because the
+// collector and the control plane usually run as separate processes: whichever
+// opened the file second would be the one to complain, which is not the one
+// whose configuration is wrong.
+func refuseSharedDatabase(serverDatabase string, collector Collector) error {
+	if !collector.Enabled {
+		// A disabled collector opens nothing, and refusing a path it will
+		// never use would make the two settings harder to move than to have.
+		return nil
+	}
+	if identicalPaths(serverDatabase, collector.Database) {
+		return fmt.Errorf("collector.database and server.database are the same file (%s): "+
+			"telemetry is a high-volume append-only stream with its own retention, "+
+			"and sharing the control plane's database would sweep and back up the two as one thing",
+			collector.Database)
+	}
+	return nil
+}
+
+// identicalPaths reports whether two paths name one file.
+//
+// Symlinks are resolved when they can be, because two names for one file is the
+// case being caught and comparing the strings would miss it. When a path does
+// not exist yet there is nothing to resolve, so the cleaned name is compared
+// instead: that is the ordinary case of a fresh install, where both files are
+// about to be created.
+func identicalPaths(first, second string) bool {
+	resolve := func(path string) string {
+		cleaned := filepath.Clean(path)
+		if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+			return resolved
+		}
+		return cleaned
+	}
+	if first == "" || second == "" {
+		return false
+	}
+	return resolve(first) == resolve(second)
 }
 
 func loadConfigFile(path string) (Config, error) {
