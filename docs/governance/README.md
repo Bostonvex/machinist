@@ -71,13 +71,19 @@ Port of `factory/protocol/*.md`:
   GitHub. It also carries the protected-path list from
   [policy/protected-files.md](policy/protected-files.md) as
   `review.DefaultProtectedPaths` — the two copies must be changed together.
+  The control plane calls it: a reviewer run submits its output block against
+  the run it judged, and the route reads both identities from the runs
+  themselves and the changed paths from the pull request's own diff. An agent
+  cannot review its own work by describing itself differently, and a review
+  that is refused records no verdict at all.
 - [`internal/factoryrun`](../../internal/factoryrun) renders and parses the
   `FACTORY:RUN` marker described in
   [protocol/factory-run-handoff.md](protocol/factory-run-handoff.md). The
-  control plane publishes it: every GitHub-triggered run has its stage written
-  to the issue it was requested on. What it cannot yet report is what it does
-  not know — branch, pull request, checks, and verdict are not part of a run's
-  recorded state, so the published marker carries identity and stage only.
+  control plane publishes it: every GitHub-triggered run has its stage, and the
+  verdict recorded against it, written to the issue it was requested on. What it
+  cannot report is what it does not know — branch and checks are not part of a
+  run's recorded state, so the published marker carries identity, stage, and
+  what was decided.
 
 ## Not yet enforced
 
@@ -92,6 +98,7 @@ not exist:
   documented, not enforced, and enable nothing until a repository is named.
 - **The two label vocabularies** in [protocol/labels.md](protocol/labels.md) are
   not yet reconciled.
-- **The review engine has no caller.** `internal/review` decides correctly and
-  nothing asks it to. Until a run's reviewer output is fed through it, a
-  published marker never carries a verdict.
+- **Nobody is assigned to review.** The control plane decides and records a
+  review when a reviewer run submits one, but it does not pair an implementer's
+  work with a reviewer, and does not chase work that was never reviewed. An
+  unreviewed run simply carries no verdict, which is what its marker says.

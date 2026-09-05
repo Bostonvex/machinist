@@ -82,6 +82,35 @@ type HeartbeatResponse struct {
 	CancelRequested bool `json:"cancel_requested"`
 }
 
+// ReviewSubmission offers one reviewer's output as the review of a run. The
+// run being reviewed is addressed by the request path; ReviewerRun is the run
+// that did the reviewing, and its lease authenticates the submission.
+//
+// The submission makes no claim about who either party is. The control plane
+// reads both identities from the runs themselves, so independence is decided
+// from recorded state rather than from what the submitter says about itself.
+type ReviewSubmission struct {
+	InstanceID string `json:"instance_id"`
+	LeaseToken string `json:"lease_token"`
+	// ReviewerRun is the run submitting the review.
+	ReviewerRun string `json:"reviewer_run"`
+	// PullRequest is the pull request the reviewer judged. The control plane
+	// reads that pull request's changed paths itself: a reviewer says which
+	// change it reviewed, never what that change touched.
+	PullRequest int `json:"pull_request"`
+	// Output is the reviewer's raw output block.
+	Output string `json:"output"`
+}
+
+// ReviewOutcome is the decision the control plane recorded, returned so the
+// submitting run learns the verdict its own review produced after policy.
+type ReviewOutcome struct {
+	Verdict        string   `json:"verdict"`
+	HighRisk       bool     `json:"high_risk"`
+	ProtectedPaths []string `json:"protected_paths,omitempty"`
+	Reasons        []string `json:"reasons,omitempty"`
+}
+
 type Completion struct {
 	InstanceID string          `json:"instance_id"`
 	LeaseToken string          `json:"lease_token"`

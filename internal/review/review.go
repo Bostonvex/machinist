@@ -7,7 +7,10 @@
 // record the outcome as run evidence.
 package review
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Verdict is the terminal judgement on one unit of reviewed work.
 type Verdict string
@@ -105,4 +108,25 @@ func (r Report) Blocking(severities []Severity) []Finding {
 
 func normalize(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// Strictest returns the strictest of the verdicts recorded for one unit of
+// work. It is how a caller combines more than one review of the same change: a
+// second reviewer may add a constraint, but may not lift one another reviewer
+// applied. No verdicts is no judgement, which is the empty verdict rather than
+// an approval. A verdict outside the contract is an error for the same reason
+// the parser refuses one: unreadable judgement is not a passing judgement.
+func Strictest(verdicts ...Verdict) (Verdict, error) {
+	var strictest Verdict
+	for _, verdict := range verdicts {
+		if !verdict.Valid() {
+			return "", fmt.Errorf("unknown verdict %q", verdict)
+		}
+		if strictest == "" {
+			strictest = verdict
+			continue
+		}
+		strictest = stricter(strictest, verdict)
+	}
+	return strictest, nil
 }

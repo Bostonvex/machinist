@@ -26,6 +26,22 @@ PROTECTED_PATHS: none | <list>
 HIGH_RISK: yes | no
 ```
 
+## Where the output goes
+
+Submit the block to the control plane against the run under review:
+`POST /api/v1/runs/{reviewed_run}/review`, with the reviewing run's own
+instance and lease token, the pull request judged, and the block as `output`.
+The response carries the verdict that was recorded, which may be stricter than
+the one submitted — policy can withhold approval, and never grants it.
+
+Do not post the block to GitHub. The control plane writes it to the run's issue
+as part of the [`FACTORY:RUN`](../protocol/factory-run-handoff.md) marker.
+
 ## Independence
 
 Reviewer must not be bound to the same runtime as the implementer.
+
+Independence is checked by the route, from what the control plane already
+records: the role each run held and the profile that actually ran. A review by
+the agent that wrote the change, or by the run under review, is refused and
+records nothing — there is no verdict to appeal, and none to point at.
