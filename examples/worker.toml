@@ -14,8 +14,8 @@ tags = []
 # [telemetry]
 # enabled = true
 # url = "http://127.0.0.1:7900/api/v1/events"
-# token_file = "~/.config/buzz-agent-observability/ingest-token"
-# identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+# token_file = "~/.machinist/collector/ingest-token"
+# identity_salt_file = "~/.machinist/collector/identity-salt"
 # endpoint_id = "dgx-primary"
 
 [control_plane]

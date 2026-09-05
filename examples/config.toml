@@ -21,8 +21,8 @@ worker_token_file = "~/.machinist/server/worker.token"
 # enabled = true
 # listen = "127.0.0.1:7900"
 # database = "~/.machinist/collector/telemetry.db"
-# token_file = "~/.config/buzz-agent-observability/ingest-token"
-# identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+# token_file = "~/.machinist/collector/ingest-token"
+# identity_salt_file = "~/.machinist/collector/identity-salt"
 # retention = "168h"
 # provider_interval = "10s"
 
@@ -56,7 +56,7 @@ worker_token_file = "~/.machinist/server/worker.token"
 # upstream = "http://127.0.0.1:18000"
 # model = "ds-0731"
 # endpoint_id = "vllm-primary"
-# context_token_file = "~/.config/buzz-agent-observability/proxy-context-token"
+# context_token_file = "~/.machinist/collector/proxy-context-token"
 
 # Routes choose the first compatible, available worker-local profile. A command
 # uses exactly one of executor, profile, or route.

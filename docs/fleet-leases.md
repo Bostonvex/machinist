@@ -25,10 +25,9 @@ require_fleet_lease = true
 Once on, it fails closed with no exceptions. A fleet with no lease, an expired
 lease, or a lease the control plane cannot read is offered no new work.
 
-Each worker names the group it belongs to:
+Each worker names the group it belongs to, at the top of `worker.toml`:
 
 ```toml
-[worker]
 fleet = "workshop"
 ```
 

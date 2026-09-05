@@ -39,6 +39,7 @@ provider = "local"
 auth_mode = "local"
 command = ["opencode.exe", "run"]
 base_url = "http://127.0.0.1:11434/v1"
+base_url_env = "OPENCODE_BASE_URL"
 requires_os = ["windows"]
 ```
 

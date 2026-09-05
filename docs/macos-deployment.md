@@ -114,8 +114,8 @@ tags = ["mac-mini", "dgx-client", "trusted"]
 [telemetry]
 enabled = true
 url = "http://127.0.0.1:7900/api/v1/events"
-token_file = "~/.config/buzz-agent-observability/ingest-token"
-identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+token_file = "~/.machinist/collector/ingest-token"
+identity_salt_file = "~/.machinist/collector/identity-salt"
 endpoint_id = "mac-mini"
 
 [profiles.dgx-deepcode]
@@ -174,47 +174,54 @@ route without consuming an attempt. Existing legacy executors remain available.
 
 ## 5. Add both Spark GPUs to observability
 
-Run the collector on Mac loopback. Its vLLM provider should read
-`http://127.0.0.1:18000/metrics`; use the built-in strict remote NVIDIA provider
-for the head Spark. The collector supports one provider of each type, so use the
-installed JSON adapter for the second Spark.
+Machinist serves the collector. Run it on Mac loopback with `machinist collector
+start` and configure it under `[collector]` in the Machinist config — there is no
+separate collector binary and no provider flags on the service.
 
-Create a mode-0600 provider file such as
-`~/.config/buzz-agent-observability/spark-worker.json`:
+Each GPU node gets its own `[[collector.nvidia_remote]]` table. The table repeats
+because a deployment reaches the number of nodes it reaches, and a node nobody
+polls is indistinguishable from a node that is idle:
 
-```json
-{
-  "schema_version": 1,
-  "scope": "hardware",
-  "provider_id": "nvidia-smi",
-  "node_id": "spark-worker",
-  "endpoint_id": null,
-  "argv": ["/Users/USER/.local/libexec/machinist/nvidia-smi-json-provider", "--host", "SPARK_WORKER_ALIAS"],
-  "allowed_metrics": [
-    "gpu.0.utilization_percent",
-    "gpu.0.memory_used_mib",
-    "gpu.0.memory_total_mib",
-    "gpu.0.temperature_celsius",
-    "gpu.0.power_watts"
-  ],
-  "timeout_seconds": 6
-}
+```toml
+[collector]
+enabled = true
+listen = "127.0.0.1:7900"
+database = "~/.machinist/collector/telemetry.db"
+token_file = "~/.machinist/collector/ingest-token"
+identity_salt_file = "~/.machinist/collector/identity-salt"
+
+[collector.vllm]
+metrics_url = "http://127.0.0.1:18000/metrics"
+endpoint_id = "vllm-primary"
+
+[[collector.nvidia_remote]]
+node_id = "spark-0e9f"
+ssh_host = "spark-0e9f"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+ssh_host = "spark-27c2"
 ```
 
-Add these fixed arguments to the collector service:
+`node_id` is what names each node, and the config refuses two that share one: two
+Sparks under one name would share a status row, and an operator reading a failure
+could not tell which machine had stopped answering. Past one remote node the name
+must be given explicitly rather than defaulted. Each appears in `/healthz` as
+`nvidia-smi-remote:<node_id>`.
 
-```text
---vllm-metrics-url http://127.0.0.1:18000/metrics
---vllm-endpoint-id dgx-spark-cluster
---nvidia-ssh-host <SPARK_HEAD_ALIAS>
---nvidia-ssh-node-id <SPARK_HEAD_NODE_ID>
---json-provider-config /absolute/path/to/spark-worker.json
+Reaching a Spark is strict-host-verified SSH; the alias must already resolve and
+verify from this account without a prompt, or the provider fails and says so.
+
+Check the collector before trusting it:
+
+```sh
+machinist collector doctor
+curl -fsS http://127.0.0.1:7900/healthz
 ```
 
-Run `buzz-observability doctor` with the same provider arguments before
-restarting its LaunchAgent. The Machinist dashboard keeps the two hardware
-`node_id` values and the model `endpoint_id` separate and marks data stale after
-45 seconds.
+The Machinist dashboard keeps the two hardware `node_id` values and the model
+`endpoint_id` separate, and marks data stale after 45 seconds rather than showing
+it as a healthy zero.
 
 ## 6. Verify the deployment
 
