@@ -304,7 +304,17 @@ machinist collector start
 machinist collector doctor
 machinist collector backup --output ~/backups/telemetry-2026-09-05.db
 machinist collector purge  --before 2026-08-01T00:00:00Z --confirm-delete-raw-events
+machinist collector demo   --confirm-synthetic-events
 ```
+
+`demo` sends two complete synthetic turns through the ingest route, so a fresh
+install can be checked without waiting for a real agent. It goes over HTTP with
+the configured token rather than writing to the database, so a success means the
+listener, the token, the schema and the store all agree — which is the question
+being asked. The confirmation is required because the turns are
+indistinguishable from real ones once stored and they move the averages an
+operator reads; they belong to agents named `demo-agent-*`, which is what makes
+them findable afterwards.
 
 The proxy has its own verb, because it has its own lifetime:
 
