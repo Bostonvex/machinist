@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+IngestPath, s.ingest)
 	mux.HandleFunc("GET "+HealthPath, s.health)
 	s.readRoutes(mux)
+	s.dashboardRoutes(mux)
 	return mux
 }
 
