@@ -36,11 +36,17 @@ automatically an accepted change.
 
 First export a task-unbound Buzz inventory. This is useful for correlating
 `FACTORY:RUN` and GitHub timestamps to exact telemetry turn IDs, but inventory
-rows are explicitly marked ineligible for pairing:
+rows are explicitly marked ineligible for pairing.
+
+The Buzz turns are a closed record: the collector that produced them was retired
+in Phase F, and its database is a snapshot rather than a live file. Point these
+commands at the archived copy, not at the path the retired service used to
+write — that path no longer has anything appending to it, and reading it as if
+it did would silently report a record that stopped:
 
 ```sh
 python3 -m evals.pilot_evidence buzz-inventory \
-  --database ~/.local/share/buzz-agent-observability/telemetry.sqlite3 \
+  --database ~/.machinist/archive/phase-f/buzz-agent-observability-telemetry.sqlite3 \
   --since 2026-09-01T00:00:00Z \
   --output ~/.machinist/pilot/buzz-turns.jsonl
 ```
@@ -51,7 +57,7 @@ sum of active turn durations:
 
 ```sh
 python3 -m evals.pilot_evidence record-buzz \
-  --database ~/.local/share/buzz-agent-observability/telemetry.sqlite3 \
+  --database ~/.machinist/archive/phase-f/buzz-agent-observability-telemetry.sqlite3 \
   --turn-id TURN_1 --turn-id TURN_2 \
   --task-id change-001 --elapsed-seconds 1800 \
   --accepted --repair-attempts 2 --operator-touches 3 --attended \

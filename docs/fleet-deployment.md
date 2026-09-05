@@ -131,24 +131,27 @@ drop-in prevents a remote worker from starting until both forwards are active.
 
 ## 6. Configure telemetry and per-node identity
 
-Run one central `buzz-agent-observability` collector on hub loopback and
-configure the Machinist control plane's `[observability]` URL as
-`http://127.0.0.1:7900`. Copy the collector ingest-token file securely to each
-worker; create a different identity-salt file on every worker. Then configure:
+Run one central collector on hub loopback with `machinist collector start`,
+and configure the Machinist control plane's `[observability]` URL as
+`http://127.0.0.1:7900`. `[collector]` is where the hub *serves* one;
+`[observability]` is where the control plane *reads* one. Copy the collector
+ingest-token file securely to each worker; create a different identity-salt
+file on every worker. Then configure:
 
 ```toml
 [telemetry]
 enabled = true
 url = "http://127.0.0.1:7900/api/v1/events"
-token_file = "~/.config/buzz-agent-observability/ingest-token"
-identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+token_file = "~/.machinist/collector/ingest-token"
+identity_salt_file = "~/.machinist/collector/identity-salt"
 endpoint_id = "worker-a"
 ```
 
 Infrastructure providers run beside the central collector. Configure a unique
 hardware `node_id` for each DGX and a unique model `endpoint_id` for each vLLM
-server. The collector's fixed remote NVIDIA provider supports one node; use one
-strict, allowlisted JSON-command provider configuration per additional node.
+server. Repeat `[[collector.nvidia_remote]]` once per DGX; the config refuses
+two nodes under one `node_id`, because which machine a reading describes is the
+whole content of the reading.
 Those read-only probes need a separately authenticated private path from the
 hub to each DGX. Do not reuse the telemetry ingest key or tunnel account for
 hardware shell access. If that path is not approved, leave infrastructure

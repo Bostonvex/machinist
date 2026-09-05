@@ -237,9 +237,11 @@ test, migration, security, health, and rollback gates below pass.
 
 ## Observability and UI
 
-Keep `buzz-agent-observability` as a separately versioned, fail-open telemetry
-service. Machinist's transactional SQLite database must not absorb high-volume
-agent/GPU samples. A provider-neutral transport sends bounded metadata through
+Telemetry is a separately versioned, fail-open service, served by `machinist
+collector start` and configured under `[collector]`. It stays a separate service
+even though Machinist now serves it: the constraint was never about who ships it.
+Machinist's transactional SQLite database must not absorb high-volume agent/GPU
+samples, and a collector that is down must not stop a run. A provider-neutral transport sends bounded metadata through
 the control plane to the collector for remote workers, or directly to a
 loopback collector on a single host.
 

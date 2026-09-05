@@ -198,8 +198,8 @@ its high-frequency data in a separate database.
 [telemetry]
 enabled = true
 url = "http://127.0.0.1:7900/api/v1/events"
-token_file = "~/.config/buzz-agent-observability/ingest-token"
-identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+token_file = "~/.machinist/collector/ingest-token"
+identity_salt_file = "~/.machinist/collector/identity-salt"
 endpoint_id = "dgx-primary"
 
 # config.toml
@@ -224,8 +224,8 @@ other.
 enabled = true
 listen = "127.0.0.1:7900"
 database = "~/.machinist/collector/telemetry.db"
-token_file = "~/.config/buzz-agent-observability/ingest-token"
-identity_salt_file = "~/.config/buzz-agent-observability/identity-salt"
+token_file = "~/.machinist/collector/ingest-token"
+identity_salt_file = "~/.machinist/collector/identity-salt"
 retention = "168h"
 provider_interval = "10s"
 
@@ -249,7 +249,7 @@ listen = "127.0.0.1:7901"
 upstream = "http://127.0.0.1:18000"
 model = "ds-0731"
 endpoint_id = "vllm-primary"
-context_token_file = "~/.config/buzz-agent-observability/proxy-context-token"
+context_token_file = "~/.machinist/collector/proxy-context-token"
 ```
 
 `listen` must be a literal loopback host. The collector is a live description of
@@ -374,8 +374,8 @@ there is not a question but a command that hangs.
 ### The dashboard
 
 `machinist collector start` serves the interface on the same address as the API
-it reads, at `/`. It is the `buzz-agent-observability` dashboard, compiled into
-the binary rather than read from a directory beside it: a collector copied to a
+it reads, at `/`. It is the dashboard from the collector this one replaces,
+compiled into the binary rather than read from a directory beside it: a collector copied to a
 machine without that directory would otherwise serve nothing and call it a
 deployment, and on a machine where the directory is writable it would serve
 whatever was put there.

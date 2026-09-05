@@ -49,6 +49,8 @@ matches the way you want to work.
 - [Buzz/ASF comparison and cutover assessment](buzz-asf-comparison.md)
 - [Consolidation migration plan](migration-plan.md) — absorb ASF, buzz-workspace,
   and buzz-agent-observability into Machinist, then sunset them
+- [Sunset rollback](sunset-rollback.md) — what Phase F retired, what it kept, and
+  how to put each piece back
 - [DeepCode evaluation](deepcode-evaluation.md) — DGX compatibility, measured
   harness overhead, risks, recommendation, and staged cutover.
 - [Cutover benchmark](../benchmarks/README.md)
