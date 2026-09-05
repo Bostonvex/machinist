@@ -164,10 +164,7 @@ func (c *Collector) Enqueue(event Event) bool {
 	c.queue = append(c.queue, event)
 	c.mutex.Unlock()
 
-	select {
-	case c.woken <- struct{}{}:
-	default:
-	}
+	c.wake()
 	return kept
 }
 
@@ -184,15 +181,29 @@ func (c *Collector) Close(ctx context.Context) error {
 	c.mutex.Lock()
 	if c.closed {
 		c.mutex.Unlock()
+		// A second Close waits for the first one's sender rather than
+		// reporting success while delivery is still going on.
+		<-c.done
 		return nil
 	}
 	c.closed = true
 	c.mutex.Unlock()
+	c.wake()
 
 	// The sender is asked to finish rather than cancelled outright, so that a
 	// shutdown does not discard the events describing what happened just
-	// before it.
-	c.flush(ctx)
+	// before it. Draining from here instead would race the sender for the
+	// queue: a batch it had already taken would be invisible to this call,
+	// which would then see an empty queue, call stop, and cancel the
+	// submission carrying exactly those events.
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+	}
+
+	// The deadline passed with a submission still in flight. Cancel it and
+	// wait, so that Close never returns while a goroutine is still delivering.
 	c.stop()
 	<-c.done
 	return ctx.Err()
@@ -201,9 +212,15 @@ func (c *Collector) Close(ctx context.Context) error {
 // send is the delivery loop.
 func (c *Collector) send(ctx context.Context) {
 	defer close(c.done)
+	defer c.stop()
 	for {
 		if delivered := c.deliverOnce(ctx); delivered {
 			continue
+		}
+		// The queue is empty. Once Close has been called nothing can be added
+		// to it, so this is the end of the stream rather than a lull.
+		if c.finished() {
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -214,14 +231,18 @@ func (c *Collector) send(ctx context.Context) {
 	}
 }
 
-// flush delivers what is queued until the queue is empty or the deadline
-// passes. A shutdown that dropped the last batch would lose exactly the events
-// describing whatever caused the shutdown.
-func (c *Collector) flush(ctx context.Context) {
-	for ctx.Err() == nil {
-		if !c.deliverOnce(ctx) {
-			return
-		}
+// finished reports that the sink is closed and has nothing left to deliver.
+func (c *Collector) finished() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.closed && len(c.queue) == 0
+}
+
+// wake nudges the sender without blocking if it is already awake.
+func (c *Collector) wake() {
+	select {
+	case c.woken <- struct{}{}:
+	default:
 	}
 }
 

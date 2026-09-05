@@ -20,6 +20,15 @@ type collected struct {
 	tokens   []string
 	statuses []int
 	refuse   int
+	delay    time.Duration
+}
+
+// hold makes every answer take this long, so that a submission can be observed
+// while it is still in flight.
+func (c *collected) hold(delay time.Duration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.delay = delay
 }
 
 func (c *collected) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -31,8 +40,15 @@ func (c *collected) ServeHTTP(response http.ResponseWriter, request *http.Reques
 	c.batches = append(c.batches, batch)
 	c.tokens = append(c.tokens, request.Header.Get("Authorization"))
 	status := c.refuse
+	delay := c.delay
 	c.mutex.Unlock()
 
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-request.Context().Done():
+		}
+	}
 	if status != 0 {
 		response.WriteHeader(status)
 		return
@@ -127,12 +143,19 @@ func TestTheSinkDeliversWhatItWasGiven(t *testing.T) {
 			t.Fatalf("event %d was dropped by an empty queue", index)
 		}
 	}
-	waitFor(t, func() bool { return upstream.total() == 5 }, "five events to arrive")
+	// Waited on the sink's own count, not the collector's. The collector
+	// records a batch before it answers, and the sink counts it as sent only
+	// after the answer arrives — so waiting on arrival can win the race
+	// against the counter that the assertion below is about.
+	waitFor(t, func() bool { return sink.Stats().Sent == 5 }, "five events to be delivered")
 
+	if upstream.total() != 5 {
+		t.Fatalf("the collector received %d events", upstream.total())
+	}
 	if token := upstream.tokens[0]; token != "Bearer collector-token" {
 		t.Fatalf("authorization = %q", token)
 	}
-	if stats := sink.Stats(); stats.Sent != 5 || stats.Dropped != 0 || stats.Failed != 0 {
+	if stats := sink.Stats(); stats.Dropped != 0 || stats.Failed != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
@@ -145,7 +168,7 @@ func TestTheSinkSendsBatchesTheCollectorWillAccept(t *testing.T) {
 	for index := 0; index < MaximumBatch*3; index++ {
 		sink.Enqueue(sample("span-" + itoa(index)))
 	}
-	waitFor(t, func() bool { return upstream.total() == MaximumBatch*3 }, "every event to arrive")
+	waitFor(t, func() bool { return sink.Stats().Sent == MaximumBatch*3 }, "every event to be delivered")
 
 	for _, batch := range upstream.received() {
 		if len(batch) > telemetry.DefaultMaximumBatch {
@@ -247,6 +270,34 @@ func TestClosingDeliversWhatIsStillQueued(t *testing.T) {
 	}
 	if err := sink.Close(context.Background()); err != nil {
 		t.Fatalf("closing twice: %v", err)
+	}
+}
+
+func TestClosingWaitsForASubmissionAlreadyInFlight(t *testing.T) {
+	// The sender is the only goroutine that takes from the queue. A Close that
+	// drained the queue itself would find nothing left while the sender was
+	// still delivering, cancel the context underneath it, and lose exactly the
+	// batch describing whatever caused the shutdown.
+	upstream, sink, _ := sinking(t, "")
+	upstream.hold(200 * time.Millisecond)
+	for index := 0; index < 20; index++ {
+		sink.Enqueue(sample("span-" + itoa(index)))
+	}
+	// The queue empties when the sender takes the batch, which is before the
+	// collector has answered: from here the submission is in flight.
+	waitFor(t, func() bool { return sink.Stats().Queued == 0 }, "the sender to take the batch")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := sink.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// The stub records a batch before it answers, so its tally cannot tell a
+	// delivery from a cancelled one. The sink counts a batch sent only once
+	// the answer arrives, which is the thing at issue.
+	if stats := sink.Stats(); stats.Sent != 20 || stats.Failed != 0 {
+		t.Fatalf("sent %d, failed %d; want 20 delivered and none lost to the close",
+			stats.Sent, stats.Failed)
 	}
 }
 
