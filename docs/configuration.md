@@ -239,11 +239,40 @@ node_id = "local-nvidia"
 [collector.nvidia_remote]
 node_id = "dgx-spark"
 ssh_host = "spark"
+
+[collector.proxy]
+listen = "127.0.0.1:7901"
+upstream = "http://127.0.0.1:18000"
+model = "ds-0731"
+endpoint_id = "vllm-primary"
+context_token_file = "~/.config/buzz-agent-observability/proxy-context-token"
 ```
 
 `listen` must be a literal loopback host. The collector is a live description of
 what every agent on this machine is doing; reaching it from elsewhere is an SSH
 tunnel, not a line in a config file.
+
+`[collector.proxy]` describes the model proxy, which `machinist proxy start`
+runs. It is a separate process from the collector on purpose: it sits in the
+model call path, so restarting the collector must not interrupt a generation,
+and a collector that is down must cost telemetry rather than the ability to make
+a model call. The proxy starts whether or not anything is listening on the other
+end, and its delivery queue drops rather than blocks.
+
+`upstream`, `model` and `endpoint_id` are required. There is no default for the
+endpoint because a measurement with no endpoint on it is a number nobody can act
+on, and no default for upstream because a proxy in the call path forwarding to
+somewhere nobody named is worse than one that refused to start. `listen` is the
+only field with a default, and like the collector's it must be loopback: the
+proxy carries whatever credential the harness sends to the model endpoint, so
+bound to a routable interface it is an open relay for that key.
+
+`context_token_file` authenticates turn declarations. A harness posts to
+`/__machinist/context` to say which turn its next calls belong to; without that
+the proxy can still measure calls, but it can only attribute them to the
+endpoint rather than to the work that made them. Both this file and the
+collector's ingest token are created by whichever process starts first, so the
+proxy does not depend on the collector having run.
 
 The telemetry database is deliberately not the control plane's. It is a
 high-volume append-only record with its own retention, and putting it beside
@@ -275,6 +304,13 @@ machinist collector start
 machinist collector doctor
 machinist collector backup --output ~/backups/telemetry-2026-09-05.db
 machinist collector purge  --before 2026-08-01T00:00:00Z --confirm-delete-raw-events
+```
+
+The proxy has its own verb, because it has its own lifetime:
+
+```
+machinist proxy start
+machinist proxy start --listen 127.0.0.1:7902
 ```
 
 `doctor` inspects what starting would depend on — both secret files, the

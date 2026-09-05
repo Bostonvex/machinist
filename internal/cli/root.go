@@ -73,6 +73,7 @@ func newRootCommand(options *commandOptions) *cobra.Command {
 	root.AddCommand(newUpdateCommand(options))
 	root.AddCommand(newHerdrCommand(options))
 	root.AddCommand(newCollectorCommand(options))
+	root.AddCommand(newProxyCommand(options))
 
 	worker := &cobra.Command{Use: "worker", Short: "Run or connect a Machinist Worker"}
 	worker.AddCommand(newRunCommand(options))

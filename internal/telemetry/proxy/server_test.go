@@ -372,7 +372,7 @@ func TestTheProxyServesOnTheAddressItReports(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx) }()
+	go func() { done <- server.Serve(ctx, nil) }()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for server.URL() == "" && time.Now().Before(deadline) {
