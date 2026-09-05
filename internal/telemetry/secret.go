@@ -37,25 +37,62 @@ func LoadOrCreateIdentitySalt(path string) (string, error) {
 	return loadOrCreate(path, "identity salt")
 }
 
+// ReadToken returns the ingest token at path and creates nothing.
+func ReadToken(path string) (string, error) { return read(path, "token") }
+
+// ReadIdentitySalt returns the identity salt at path and creates nothing.
+func ReadIdentitySalt(path string) (string, error) { return read(path, "identity salt") }
+
 func loadOrCreate(path, label string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("%w: no %s file configured", ErrSecretFile, label)
+	if err := named(path, label); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("%w: create %s directory: %v", ErrSecretFile, label, err)
 	}
-
-	// A symlink is refused before anything is read or written. Following one
-	// would let whoever could create it choose where a fresh secret gets
-	// written, or point the read at a file they can already see.
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("%w: %s file must not be a symbolic link", ErrSecretFile, label)
+	if err := refuseSymlink(path, label); err != nil {
+		return "", err
 	}
-
 	if err := create(path, label); err != nil {
 		return "", err
 	}
+	return inspect(path, label)
+}
 
+// read returns a secret that already exists and creates nothing, so a
+// diagnostic can report an absent or widened file as the finding it is. A
+// doctor that created what it went looking for would answer for a deployment
+// it had just repaired, and would tell an operator running it before the first
+// start that a token exists because asking produced one.
+func read(path, label string) (string, error) {
+	if err := named(path, label); err != nil {
+		return "", err
+	}
+	if err := refuseSymlink(path, label); err != nil {
+		return "", err
+	}
+	return inspect(path, label)
+}
+
+func named(path, label string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("%w: no %s file configured", ErrSecretFile, label)
+	}
+	return nil
+}
+
+// refuseSymlink is checked before anything is read or written. Following one
+// would let whoever could create it choose where a fresh secret gets written,
+// or point the read at a file they can already see.
+func refuseSymlink(path, label string) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s file must not be a symbolic link", ErrSecretFile, label)
+	}
+	return nil
+}
+
+// inspect reads a secret file and refuses one it cannot trust.
+func inspect(path, label string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("%w: read %s file: %v", ErrSecretFile, label, err)

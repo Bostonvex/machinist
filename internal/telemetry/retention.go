@@ -61,5 +61,15 @@ func (s *Store) Health(ctx context.Context) (map[string]any, error) {
 		}
 		counts[key] = count
 	}
+	// The journal mode is reported because it is the difference between a
+	// reader that never blocks ingestion and one that does. It is set on every
+	// open, so an answer other than WAL means the pragma did not take on this
+	// file — which is a property of the database, not of the code that opened
+	// it, and nothing else would reveal it.
+	var journal string
+	if err := s.read.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journal); err != nil {
+		return nil, fmt.Errorf("read journal mode: %w", err)
+	}
+	counts["journal_mode"] = journal
 	return counts, nil
 }

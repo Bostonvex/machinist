@@ -134,3 +134,39 @@ func TestTheTokenAndTheSaltAreDifferentSecrets(t *testing.T) {
 		t.Error("the identity salt is the ingest token")
 	}
 }
+
+// Reading creates nothing. A diagnostic that made the file it went looking for
+// would report a healthy deployment it had just repaired.
+func TestReadingASecretCreatesNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ingest.token")
+	if _, err := ReadToken(path); err == nil {
+		t.Fatal("reading an absent token succeeded")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("reading the token created it")
+	}
+	if _, err := ReadIdentitySalt(path); err == nil {
+		t.Fatal("reading an absent identity salt succeeded")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("reading the identity salt created it")
+	}
+}
+
+// A file this process wrote correctly can be widened afterwards, and reading is
+// where that gets noticed.
+func TestReadingRefusesAWidenedSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ingest.token")
+	if _, err := LoadOrCreateToken(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadToken(path); err != nil {
+		t.Fatalf("read a freshly created token: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadToken(path); err == nil {
+		t.Fatal("reading a world-readable token succeeded")
+	}
+}

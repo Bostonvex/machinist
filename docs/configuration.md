@@ -264,6 +264,46 @@ because which machine a reading describes is the whole content of the reading. A
 provider that cannot be built stops the collector rather than being skipped: a
 poller silently absent is indistinguishable from hardware that is idle.
 
+### Operating a collector
+
+Four verbs, all reading the same `[collector]` section. None of them can be
+pointed at a database no configured collector owns, and none run at all when
+`enabled` is false.
+
+```
+machinist collector start
+machinist collector doctor
+machinist collector backup --output ~/backups/telemetry-2026-09-05.db
+machinist collector purge  --before 2026-08-01T00:00:00Z --confirm-delete-raw-events
+```
+
+`doctor` inspects what starting would depend on — both secret files, the
+database, and one bounded poll from every configured provider — and prints a
+JSON report, exiting non-zero when any check failed. It creates nothing and
+repairs nothing. An absent token is the finding, not a step to take: a doctor
+that made the file it went looking for would report a healthy deployment it had
+just repaired, and would answer for a collector that has never started as though
+it had. It runs every check rather than stopping at the first failure, so
+repairing three problems takes one invocation rather than three.
+
+`backup` writes a consistent copy with SQLite's `VACUUM INTO`, not a file copy.
+The database is written to while a backup runs, so copying the file and its
+write-ahead log with `cp` captures the two at different instants and produces an
+archive that only fails to open on the day somebody needs it. The copy is staged
+beside the destination at mode 0600 and linked into place, so a backup never
+overwrites one that already exists — destroying an earlier backup is the one
+thing this must never do.
+
+`purge` deletes raw events and infrastructure samples observed before a cutoff.
+Agents and turns are kept: they are small, they are what a reader actually asks
+about, and deleting them would erase that an agent ever ran rather than the
+detail of what it did. The cutoff must carry a timezone, because every
+`observed_at` is UTC and reading a zoneless one as local time would, east of
+Greenwich, delete hours of events that have not expired — with nothing
+afterwards to show it. The confirmation is a flag rather than a prompt: this
+runs from launchd and cron at least as often as from a terminal, and a prompt
+there is not a question but a command that hangs.
+
 ## Migration
 
 The `agents` table was renamed to `commands`. Move `[agents.NAME]` to `[commands.NAME]`
