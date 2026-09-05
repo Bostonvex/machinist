@@ -24,6 +24,8 @@ matches the way you want to work.
   cancellation.
 - [Fleet leases](fleet-leases.md) — stop a group of workers taking new work,
   from the control plane rather than through the fleet itself.
+- [The work board](work-board.md) — every job in the lane it is in, projected
+  from what the control plane recorded rather than reconstructed from labels.
 - [Observability bridge](observability.md) — agents, tokens, prompt cache, model
   KV cache, GPU health, and the failure-isolated telemetry collector.
 
