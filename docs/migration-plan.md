@@ -1,16 +1,52 @@
 # Machinist consolidation migration plan
 
-Status: **Decision recorded; plan document. NOT yet executed.** This is the
-authoritative plan for absorbing the capabilities of three deprecated
-repositories into Machinist and then sunsetting them. Implementation is
-follow-on work driven by this document; nothing here is shipped until the
-Acceptance and Sunset gates pass.
+This is the authoritative plan for absorbing the capabilities of three
+deprecated repositories into Machinist and then sunsetting them.
+
+## Status
+
+| Phase | State | Issue |
+| --- | --- | --- |
+| A — ASF roles/policy/guard/review | delivered | #4 |
+| B — Gatekeeper merge/deploy native | delivered | #5 |
+| C — telemetry collector into Machinist | delivered | #6 |
+| D — durable-knowledge / kanban / ops patterns | delivered | #7 |
+| E — cutover: shadow, canary, default | delivered | #8 |
+| F — sunset | in progress | #9 |
+
+Every phase heading in §4 repeats its state, and
+`TestThePlanAgreesWithItselfAboutWhatHasShipped` fails when the two disagree.
+The table and the headings are edited by different changes at different times,
+and that drift is not hypothetical: this document told every reader for days
+that nothing had been executed, while five of its six phases were closed.
+
+**Delivered is not sunset.** Phase F's exit criterion is unmet, so all three
+source repositories still exist and one of the three is still orchestrating
+live work. Nothing here has been switched off except where this document says
+it has.
 
 Source repositories (revision-reviewed in `docs/buzz-asf-comparison.md`):
 
 - `Bostonvex/agent-software-factory` (ASF)
 - `Bostonvex/buzz-workspace`
-- `Bostonvex/buzz-agent-observability`
+- `Bostonvex/buzz-agent-observability` — **retired 2026-09-05.** Stopped,
+  disabled, archived, and documented in [sunset-rollback.md](sunset-rollback.md).
+
+Not a source repository, and in the blast radius anyway:
+
+- `Bostonvex/auspicia-nextgen` is a **consumer** of ASF, not a thing being
+  absorbed by it. None of its code moves into Machinist; what moves is the
+  orchestration underneath it. It matters to this plan because Phase F stops
+  ASF's ticker, kanban and webhook receiver, and those dispatch its work — 34
+  open cards as of 2026-09-05. Its own
+  [#919](https://github.com/Bostonvex/auspicia-nextgen/issues/919) makes
+  Machinist its control plane of record and leaves the machine-local
+  registration to be "handled outside this issue"; #84 is that outside.
+
+  Listing it here is the correction for a real failure: the scope section named
+  three repositories, the sunset step would have stopped a fourth, and nothing
+  in the document connected the two. That gap was found from the live board, not
+  from the plan.
 
 ## 1. Decision
 
@@ -79,7 +115,7 @@ not carried; collaboration/scheduling infra or redundant).
 
 ## 4. Phased task list
 
-### Phase A — ASF roles/policy/guard/review into Machinist
+### Phase A — ASF roles/policy/guard/review into Machinist _(delivered)_
 - Port role definitions, policy, protocol docs into `docs/governance/`.
 - Add `internal/review` independent-review engine (+ `FACTORY:RUN` handoff
   writer that emits GitHub PR/commit evidence).
@@ -98,7 +134,7 @@ end-to-end in Machinist and produces a GitHub draft PR with handoff evidence.
 Exit: given a named go-ahead on a ready PR, Gatekeeper merges and (if
 authorized) tags/deploys; merge/deploy is never performed by the Foreman.
 
-### Phase C — telemetry collector into Machinist
+### Phase C — telemetry collector into Machinist _(delivered)_
 - Port collector/provider/proxy/schema into `internal/telemetry`.
 - Reuse the existing read-only Agents & infra bridge; fold collector ops into
   Machinist release lifecycle.
@@ -108,7 +144,7 @@ authorized) tags/deploys; merge/deploy is never performed by the Foreman.
 Exit: `buzz-agent-observability` capability served by Machinist with existing
 UI parity and fail-open behavior.
 
-### Phase D — durable-knowledge / kanban / ops patterns
+### Phase D — durable-knowledge / kanban / ops patterns _(delivered)_
 - Port fundamental durable-knowledge patterns (plans/research/work-logs) as
   `docs/`/`notes/` repository artifacts.
 - Consolidate kanban/ticker/fleet ops into Machinist work board + leases.
@@ -117,7 +153,7 @@ UI parity and fail-open behavior.
 Exit: operators have Machinist-native work board/leases; durable knowledge is
 repository artifacts.
 
-### Phase E — cutover: shadow, canary, default
+### Phase E — cutover: shadow, canary, default _(delivered)_
 - Shadow representative ASF/Buzz/telemetry workloads; then canary 10/25/50/100%.
 - Keep ASF/Buzz/collector as operational fallback during acceptance window.
 - Freeze new work in the source repos after a stable window.
@@ -125,7 +161,7 @@ repository artifacts.
 Exit: two consecutive weeks meet the Acceptance gates with zero critical
 safety or data-loss incidents.
 
-### Phase F — sunset
+### Phase F — sunset _(in progress)_
 - Export final mappings/archive snapshots; remove unused tickers/agents/seats.
 - Revoke obsolete credentials and bot permissions.
 - Archive or make read-only all three source repos; remove references from
@@ -133,6 +169,19 @@ safety or data-loss incidents.
 
 Exit: all source repos drained, archived/read-only, and no live dependency on
 them; rollback documented.
+
+Where it actually stands, per source repository:
+
+| Repository | Drained | Retired | Archived |
+| --- | --- | --- | --- |
+| `buzz-agent-observability` | yes, no producer since 2026-09-02 | yes | yes |
+| `agent-software-factory` | 0 open cards in the repo itself | **no** — its ticker, kanban and webhook receiver are running | no |
+| `buzz-workspace` | **no** — 40 open cards | n/a | no |
+
+ASF's repository being empty is not ASF being drained. What it runs is what
+matters, and what it runs serves `buzz-workspace` and `auspicia-nextgen`.
+Stopping it is tracked in #84, which also holds the machine-local registration
+that has to land first. References were removed from the docs in #83.
 
 ## 5. Acceptance gates (measured)
 
@@ -152,8 +201,12 @@ gates:
    production use.
 10. **Consolidation:** 100% of the migrated capabilities (matrix above) are
     available in Machinist with no functional regression.
-11. **Sunset:** all three source repos drained and archived/read-only; no live
-    dependency remains; documented rollback exists.
+11. **Sunset:** all three source repos — `agent-software-factory`,
+    `buzz-workspace`, `buzz-agent-observability` — drained and
+    archived/read-only; no live dependency remains; documented rollback exists.
+    `auspicia-nextgen` is not counted by this gate, because it is not being
+    absorbed; what the gate does require is that stopping ASF leaves its work
+    dispatchable, which is why it is named in §1.
 
 ## 6. Deployment and rollback
 
