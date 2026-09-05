@@ -236,7 +236,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 10
+	const schemaVersion = 11
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -305,6 +305,8 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 			return fmt.Errorf("upgrade database schema to version 10: %w", err)
 		}
 	}
+	// Version 11 adds review_assignments and nothing else. A new table needs no
+	// upgrade func: the schema block below creates it at every version.
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
@@ -346,7 +348,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_su
 CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', pull_request INTEGER NOT NULL DEFAULT 0, published_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_reviews (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, reviewer_run_id TEXT NOT NULL, pull_request INTEGER NOT NULL, verdict TEXT NOT NULL, high_risk INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', findings TEXT NOT NULL DEFAULT '[]', protected_paths TEXT NOT NULL DEFAULT '[]', reasons TEXT NOT NULL DEFAULT '[]', recorded_at TEXT NOT NULL, PRIMARY KEY(run_id,reviewer_run_id));
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=10;`
+CREATE TABLE IF NOT EXISTS review_assignments (
+ reviewed_run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, pull_request INTEGER NOT NULL,
+ reviewer_job_id TEXT NOT NULL, reviewer_command TEXT NOT NULL, assigned_at TEXT NOT NULL,
+ PRIMARY KEY(reviewed_run_id,pull_request));
+PRAGMA user_version=11;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -2143,6 +2149,144 @@ findings=excluded.findings,protected_paths=excluded.protected_paths,reasons=excl
 		return fmt.Errorf("record review: %w", err)
 	}
 	return nil
+}
+
+// ReviewAssignmentCandidate is a completed run whose work may need a reviewer.
+// It carries what the assigner needs to decide: where the work lives, which
+// issue asked for it, and which agent produced it, so a reviewer can be chosen
+// that is not that agent.
+type ReviewAssignmentCandidate struct {
+	RunID string
+	JobID string
+	// Repository is the logical repository the run belongs to, which is what
+	// the review route scopes on. The review job must sit in it, or the review
+	// it produces is refused as addressing other work.
+	Repository string
+	// GitHubRepository is the same repository as the forge names it. It is what
+	// the forge is asked about and what a pull request URL is built from.
+	GitHubRepository string
+	IssueNumber      int
+	// Agent is the profile the run acted under, compared against a candidate
+	// reviewer's profiles so an assignment is never made that the review route
+	// would have to refuse.
+	Agent string
+}
+
+// ReviewAssignmentCandidates lists GitHub-triggered runs that finished their
+// work, carry no review, and have not already had one assigned.
+//
+// Only runs that succeeded are offered. A run that failed produced no change
+// worth an independent opinion, and reviewing it would put a verdict on work
+// that never happened.
+//
+// The window bounds how long the control plane keeps looking for a change to
+// review. Past it, a run is simply unreviewed, which is what its marker says —
+// preferable to asking the forge about every run that ever finished, forever.
+func (s *Store) ReviewAssignmentCandidates(ctx context.Context, completedAfter time.Time, limit int) ([]ReviewAssignmentCandidate, error) {
+	if limit <= 0 {
+		return nil, errors.New("review assignment limit must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,j.id,r.repository,g.repository,g.issue_number,`+runAgentSQL+`
+FROM github_trigger_requests g
+JOIN jobs j ON j.id=g.job_id
+JOIN runs r ON r.job_id=j.id
+WHERE g.state='admitted' AND r.state='succeeded' AND j.updated_at>=?
+ AND r.role<>? AND NOT EXISTS(SELECT 1 FROM run_reviews v WHERE v.run_id=r.id)
+ AND NOT EXISTS(SELECT 1 FROM review_assignments a WHERE a.reviewed_run_id=r.id)
+ORDER BY j.updated_at DESC LIMIT ?`,
+		completedAfter.UTC().Format(time.RFC3339Nano), review.RoleReviewer, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := []ReviewAssignmentCandidate{}
+	for rows.Next() {
+		var candidate ReviewAssignmentCandidate
+		if err := rows.Scan(&candidate.RunID, &candidate.JobID, &candidate.Repository, &candidate.GitHubRepository, &candidate.IssueNumber, &candidate.Agent); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// AssignReview creates the review job for a run's pull request and records the
+// assignment, in one transaction.
+//
+// The record and the job are written together on purpose: a job without a
+// record would be assigned again on the next pass, and a record without a job
+// would leave the run permanently marked as reviewed by nobody. Two assigners
+// racing resolve on the primary key — the loser's job is rolled back rather
+// than left queued.
+func (s *Store) AssignReview(ctx context.Context, candidate ReviewAssignmentCandidate, pullRequest int, command config.ResolvedCommand) (string, error) {
+	if strings.TrimSpace(candidate.RunID) == "" {
+		return "", errors.New("reviewed run id is required")
+	}
+	if pullRequest <= 0 {
+		return "", errors.New("review assignment pull request must be positive")
+	}
+	if command.Name == "" {
+		return "", errors.New("review assignment must name one command")
+	}
+	if normalizeRole(command.Role) != review.RoleReviewer {
+		return "", fmt.Errorf("review assignment command %q holds role %q, not %q", command.Name, command.Role, review.RoleReviewer)
+	}
+	jobID, err := randomID("job", 12)
+	if err != nil {
+		return "", err
+	}
+	runID, err := randomID("run", 12)
+	if err != nil {
+		return "", err
+	}
+	candidates, fallbackOn, err := routeFields(command)
+	if err != nil {
+		return "", err
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_assignments(reviewed_run_id,pull_request,reviewer_job_id,reviewer_command,assigned_at) VALUES(?,?,?,?,?)`,
+		candidate.RunID, pullRequest, jobID, command.Name, now); err != nil {
+		return "", fmt.Errorf("record review assignment: %w", err)
+	}
+	prompt := reviewAssignmentPrompt(candidate, pullRequest)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,prompt,repository,command,execution_mode,origin,state,created_at,updated_at) VALUES(?,?,?,?,'process','review-assignment','queued',?,?)`,
+		jobID, prompt, candidate.Repository, command.Name, now, now); err != nil {
+		return "", fmt.Errorf("insert review job: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs(id,job_id,command,command_hash,executor,model,repository,rendered_prompt,timeout_ms,state,route,profile,harness,provider,auth_mode,role,candidate_profiles,max_attempts,max_total_tokens,fallback_on) VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)`,
+		runID, jobID, command.Name, command.Hash, command.Executor, command.Model, candidate.Repository, command.Prompt,
+		command.Timeout.Milliseconds(), command.Route, command.Profile, command.Harness, command.Provider, command.AuthMode,
+		command.Role, candidates, runMaxAttempts(command), command.MaxTotalTokens, fallbackOn); err != nil {
+		return "", fmt.Errorf("insert review run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit review assignment: %w", err)
+	}
+	return jobID, nil
+}
+
+// reviewAssignmentPrompt tells the reviewer which change to judge and where the
+// verdict goes. It names the reviewed run because the reviewer submits against
+// it, and the issue because the reviewer is judging work against what was
+// asked, not against the diff alone.
+func reviewAssignmentPrompt(candidate ReviewAssignmentCandidate, pullRequest int) string {
+	return fmt.Sprintf(
+		"Independently review https://github.com/%s/pull/%d, the change made for https://github.com/%s/issues/%d.\n"+
+			"Submit your output block to POST /api/v1/runs/%s/review with your own instance id and lease token.\n"+
+			"Do not post to GitHub, approve, or merge.",
+		candidate.GitHubRepository, pullRequest, candidate.GitHubRepository, candidate.IssueNumber, candidate.RunID)
+}
+
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
 }
 
 func (s *Store) listJobs(ctx context.Context) ([]Job, error) {

@@ -15,11 +15,13 @@ import (
 // change, not the change itself.
 const maxReviewBytes = 1 << 20
 
-// pullRequestFileLister reads the paths a pull request touches. It is the
-// review route's only source of changed paths: neither the reviewer nor the
-// author gets to say what the change touched.
-type pullRequestFileLister interface {
+// gitHubPullRequests is what the control plane reads from the forge about
+// changes. It is the review route's only source of changed paths, and the
+// assigner's only source of which change a run produced: neither the reviewer
+// nor the author gets to say either.
+type gitHubPullRequests interface {
 	ListPullRequestFiles(ctx context.Context, repository string, number int) ([]string, error)
+	LinkedPullRequests(ctx context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error)
 }
 
 // submitReview records one independent review of a run.

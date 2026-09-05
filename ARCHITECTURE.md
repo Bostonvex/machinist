@@ -21,7 +21,13 @@ Machinist owns process execution, not orchestration.
   can neither describe itself into independence nor decide for itself which files it
   changed. A refused review records nothing: a run that could not be reviewed keeps no
   verdict rather than gaining one. A run judged more than once carries the strictest
-  verdict recorded against it.
+  verdict recorded against it. The control plane also asks for the review: a scheduler
+  pass pairs finished GitHub-triggered work with a configured reviewer whose profiles
+  cannot include the agent that wrote the change, so an assignment is never made that
+  the route would have to refuse. Which change to review comes from the issue's own
+  timeline, and only when exactly one open pull request identifies the work — no open
+  change means there is nothing to review yet, and several means the control plane
+  would be choosing which change the run made.
 - `internal/factoryrun` renders and parses the `FACTORY:RUN` handoff marker that
   carries one run's evidence across sessions. It reads only the lines after the
   marker anchor, requires an explicit state on every check, and accepts only the

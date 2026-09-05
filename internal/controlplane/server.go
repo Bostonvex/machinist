@@ -66,7 +66,7 @@ type Server struct {
 	triggers           []config.ResolvedTrigger
 	github             githubTriggerClient
 	markers            *factoryrun.Updater
-	pullRequests       pullRequestFileLister
+	pullRequests       gitHubPullRequests
 	reviews            review.Engine
 	schedulerEvery     time.Duration
 	now                func() time.Time
@@ -325,6 +325,7 @@ func (s *Server) runScheduler(ctx context.Context) error {
 	}
 	loop(true, s.maintainState)
 	loop(true, s.publishFactoryRunMarkers)
+	loop(true, s.assignReviewers)
 	<-ctx.Done()
 	schedulers.Wait()
 	return nil

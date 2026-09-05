@@ -26,6 +26,17 @@ PROTECTED_PATHS: none | <list>
 HIGH_RISK: yes | no
 ```
 
+## How the work arrives
+
+A reviewer run is created by the control plane when a piece of finished
+GitHub-triggered work has an open pull request and no verdict. The prompt names
+the change to judge, the issue it was made for, and the run to submit against.
+
+A reviewer is only assigned where it cannot run as the agent that wrote the
+change — including through a route's fallbacks. Where no such reviewer is
+configured, no review is assigned, and the work stays unreviewed rather than
+being reviewed by its own author.
+
 ## Where the output goes
 
 Submit the block to the control plane against the run under review:
