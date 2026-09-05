@@ -36,3 +36,13 @@ the upstream Deep Code harness change is specified in
   the same issue.
 - Keep exactly one `<!-- machinist:foreman-state -->` comment per issue and the
   correct stage label.
+
+## Durable knowledge
+
+- What a session works out belongs in `notes/`, not only in the session:
+  a `plan` before the work, `research` while a question is open, a `work-log`
+  after something changed. Write them with `machinist notes new`.
+- Do not edit a plan into agreement with what happened. Supersede it and write
+  the work log; the gap between the two is usually the useful part.
+- `machinist notes check` must pass. See
+  [docs/durable-knowledge.md](docs/durable-knowledge.md).
