@@ -87,6 +87,34 @@ executor = "codex"
 prompt_file = "prompts/shepherd.md"
 timeout = "120m"
 
+# The Foreman never plans, builds, or reviews its own work. It hands each of
+# those to a fresh delegate, and a harness with no native subagents satisfies
+# that with `machinist run --command delegate-plan|delegate-build|delegate-review`,
+# which is a separate process with its own context. These three commands are
+# what those runs resolve to, so the Foreman prompt and this file have to agree:
+# a prompt that names a command nothing defines blocks the run it was meant to
+# unblock.
+[commands.delegate-plan]
+executor = "codex"
+role = "planner"
+prompt_file = "prompts/delegate-plan.md"
+timeout = "45m"
+
+[commands.delegate-build]
+executor = "codex"
+role = "implementer"
+prompt_file = "prompts/delegate-build.md"
+timeout = "90m"
+
+# The role is not a label here. The review route reads it to decide whether a
+# submitted verdict is independent of the run it judges, and a review recorded
+# by a run with any other role is refused.
+[commands.delegate-review]
+executor = "codex"
+role = "reviewer"
+prompt_file = "prompts/reviewer.md"
+timeout = "45m"
+
 # Schedule Shepherd for one configured repository with a trigger like this:
 # [github.repositories]
 # my-project = "owner/my-project"
