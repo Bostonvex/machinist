@@ -178,10 +178,14 @@ func NewJsonCommandFromFile(path string, run Runner) (*JsonCommand, error) {
 	if err != nil {
 		return nil, err
 	}
+	timeout, err := jsonCommandTimeout(config["timeout_seconds"])
+	if err != nil {
+		return nil, err
+	}
 	return NewJsonCommand(
 		Scope(scopeValue), argv, allowed,
 		providerID, nodeID, endpointID,
-		jsonCommandTimeout(config["timeout_seconds"]),
+		timeout,
 		run,
 	)
 }
@@ -203,12 +207,36 @@ func jsonCommandID(value any, name string) (string, error) {
 	return text, nil
 }
 
-func jsonCommandTimeout(value any) time.Duration {
+// jsonCommandTimeout reads the optional timeout. A missing value takes the
+// default; anything else must be a number this process can act on.
+//
+// Returning the default for a value it could not read would be the worst of
+// the three outcomes available here. An operator who wrote "30s", or 30 as a
+// string, or misspelled a nested key, would get a provider that runs on a
+// timeout they did not choose and never said so — and a timeout is exactly the
+// setting whose being wrong shows up as an unrelated symptom much later. A
+// malformed timeout is an error, never a permissive default.
+func jsonCommandTimeout(value any) (time.Duration, error) {
+	if value == nil {
+		return 0, nil
+	}
 	seconds, ok := value.(float64)
 	if !ok {
-		return 0
+		return 0, errors.New("json provider timeout_seconds must be a number")
 	}
-	return time.Duration(seconds * float64(time.Second))
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return 0, errors.New("json provider timeout_seconds must be a finite number")
+	}
+	if seconds <= 0 {
+		// Zero is how the caller says "use the default", so a configured zero
+		// would be indistinguishable from an unset one. An operator who wrote
+		// it meant something, and this cannot tell what.
+		return 0, errors.New("json provider timeout_seconds must be greater than zero")
+	}
+	if seconds > maximumTimeout.Seconds() {
+		return 0, fmt.Errorf("json provider timeout_seconds must not exceed %s", maximumTimeout)
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
 }
 
 func jsonCommandArray(value any, field string) ([]string, error) {

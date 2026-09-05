@@ -235,3 +235,68 @@ func TestAMissingConfigFileIsRefused(t *testing.T) {
 		t.Fatal("a missing config file was accepted")
 	}
 }
+
+func TestAMalformedTimeoutIsRefusedRatherThanDefaulted(t *testing.T) {
+	// A timeout the loader could not read used to become the default one. The
+	// provider then ran on a bound the operator never chose, and said nothing
+	// — which is the shape of defect that surfaces much later as an unrelated
+	// symptom, because a timeout is only visible when it fires.
+	refused := map[string]string{
+		"a duration string": `"30s"`,
+		"a numeric string":  `"5"`,
+		"a boolean":         `true`,
+		"an object":         `{"seconds": 5}`,
+		"an array":          `[5]`,
+		"zero":              `0`,
+		"negative":          `-5`,
+		"past the maximum":  `100000`,
+	}
+	for name, value := range refused {
+		if _, err := providerWithTimeout(t, value); err == nil {
+			t.Fatalf("%s was accepted as a timeout", name)
+		}
+	}
+}
+
+func TestANullTimeoutTakesTheDefault(t *testing.T) {
+	// Saying nothing is the one case where a default is the operator's intent
+	// rather than a substitute for their intent.
+	provider, err := providerWithTimeout(t, "null")
+	if err != nil {
+		t.Fatalf("a null timeout was refused: %v", err)
+	}
+	if provider.timeout != defaultCommandRun {
+		t.Fatalf("timeout = %s, want the default %s", provider.timeout, defaultCommandRun)
+	}
+}
+
+func TestAConfiguredTimeoutIsTheOneThatRuns(t *testing.T) {
+	provider, err := providerWithTimeout(t, "2.5")
+	if err != nil {
+		t.Fatalf("a fractional timeout was refused: %v", err)
+	}
+	if provider.timeout != 2500*time.Millisecond {
+		t.Fatalf("timeout = %s, want 2.5s", provider.timeout)
+	}
+}
+
+// providerWithTimeout builds a provider from a config that differs only in its
+// timeout, so what a test asserts is about the timeout and nothing else.
+func providerWithTimeout(t *testing.T, timeout string) (*JsonCommand, error) {
+	t.Helper()
+	config := `{
+	  "schema_version": 1,
+	  "scope": "hardware",
+	  "provider_id": "nvidia-smi",
+	  "node_id": "dgx-spark",
+	  "endpoint_id": null,
+	  "argv": ["/usr/local/bin/gpu-read"],
+	  "allowed_metrics": ["gpu_utilization"],
+	  "timeout_seconds": ` + timeout + `
+	}`
+	path := filepath.Join(t.TempDir(), "gpu.json")
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatalf("could not write the config: %v", err)
+	}
+	return NewJsonCommandFromFile(path, stubRunner(hardwareDocument, nil))
+}
