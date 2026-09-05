@@ -118,6 +118,11 @@ type ReviewOutcome struct {
 	HighRisk       bool     `json:"high_risk"`
 	ProtectedPaths []string `json:"protected_paths,omitempty"`
 	Reasons        []string `json:"reasons,omitempty"`
+	// Promoted says whether this review took the change out of draft. It is
+	// reported rather than inferred from the verdict: an approval that could
+	// not be promoted is still an approval, and the difference is the one thing
+	// a reader cannot work out from the verdict alone.
+	Promoted bool `json:"promoted,omitempty"`
 }
 
 type Completion struct {

@@ -188,15 +188,21 @@ a repair attempt.
 ## Create or reuse the pull request
 
 Confirm the branch still equals the approved SHA. If not, review again. With no pull
-request, push `<approved-sha>:refs/heads/<branch>` and open one non-draft pull request linked
+request, push `<approved-sha>:refs/heads/<branch>` and open one **draft** pull request linked
 to the issue with a short summary and exact checks. Add or update one issue comment
 containing `<!-- machinist:foreman-pr -->` and its URL.
+
+You never lift the draft: your own review is not independent, because you wrote the
+change. The control plane takes it out of draft when an independent reviewer records
+`ready-for-human-review`. Never run `gh pr ready`, on any attempt.
+
 With an existing pull request, verify the approved SHA descends from its remote head and
 recheck that it is open before pushing the same immutable refspec to that branch. If it
 closed, return to linked-pull-request resolution. Never create another pull request. Keep the
 worktree while it is open. For both paths, confirm the base, exact head, issue link, and
-open non-draft state. On failure set `machinist:needs-human`, persist the evidence, and stop.
-Otherwise persist the state, set `machinist:verifying`, and enter the Automation gate.
+open state. One already out of draft was promoted; never convert one back. On failure set
+`machinist:needs-human`, persist the evidence, and stop. Otherwise persist the state, set
+`machinist:verifying`, and enter the Automation gate.
 
 ## Automation gate
 

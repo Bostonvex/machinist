@@ -28,6 +28,10 @@ type gitHubPullRequests interface {
 	// reason the changed paths are: the reviewer does not get to say what it
 	// reviewed.
 	PullRequestHead(ctx context.Context, repository string, number int) (string, error)
+	// PromotePullRequest takes the change out of draft. It is the only write
+	// the review path makes, and it is not merge authority: see
+	// promoteOnApproval.
+	PromotePullRequest(ctx context.Context, repository string, number int) error
 }
 
 // submitReview records one independent review of a run.
@@ -141,11 +145,15 @@ func (s *Server) submitReview(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusInternalServerError, errors.New("record review"))
 		return
 	}
+	// The review is recorded before this and never depends on it. A promotion
+	// that fails leaves a draft, which is the standing the work already had.
+	promoted := s.promoteOnApproval(request.Context(), subject.Repository, repository, input.PullRequest)
 	writeJSON(response, http.StatusOK, protocol.ReviewOutcome{
 		Verdict:        string(outcome.Verdict),
 		HighRisk:       outcome.HighRisk,
 		ProtectedPaths: outcome.ProtectedPaths,
 		Reasons:        outcome.Reasons,
+		Promoted:       promoted,
 	})
 }
 
