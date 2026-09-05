@@ -83,41 +83,54 @@ herdr --session codex
 herdr --session deepseek
 ```
 
-The DeepSeek session uses
-[`lessweb/deepcode-cli`](https://github.com/lessweb/deepcode-cli), a dedicated
-DeepSeek coding harness, not Codex. DeepCode 0.3.1 provides both an interactive
-TUI and `--exec` mode and accepts an OpenAI-compatible local endpoint. Install
-and pin it on the Mac mini:
+The recommended DeepSeek session uses OpenCode for its interactive TUI. The
+service worker uses official DeepSeek Harness (`dsh`) for autonomous jobs, and
+Aider is the focused repair fallback. Install missing tools on the Mac mini:
 
 ```sh
-npm install --global @vegamo/deepcode-cli@0.3.1
-deepcode --version
+npm install --global opencode-ai
+npm install --global @deepseek-ai/dsh
+uv tool install --python 3.12 --with pip aider-chat@latest
 ```
 
-Configure the worker with the repository's process and Herdr wrappers:
+Verify the endpoint and all three wrappers before opening Herdr:
+
+```sh
+curl http://127.0.0.1:18000/v1/models
+plugins/herdr-machinist/scripts/smoke-local-deepseek.sh
+```
+
+Configure the interactive session worker with OpenCode:
 
 ```toml
-[profiles.dgx-deepcode]
-harness = "deepcode"
+[profiles.opencode-local-deepseek]
+harness = "opencode"
 provider = "openai_compatible"
 auth_mode = "local"
 base_url = "http://127.0.0.1:18000/v1"
-base_url_env = "DEEPCODE_BASE_URL"
-command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode.sh", "--model={{machinist.model}}"]
-herdr_command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-deepcode-herdr.sh", "--model={{machinist.model}}"]
-models = { local = "ds-0731" }
-requires_executables = ["deepcode", "node"]
+base_url_env = "DEEPSEEK_BASE_URL"
+command = ["/absolute/path/to/machinist/plugins/herdr-machinist/scripts/run-opencode-herdr.sh", "--model={{machinist.model}}", "--headless"]
+herdr_agent = "opencode"
+herdr_args = ["--pure", "--model=machinist-local-deepseek/{{machinist.model}}"]
+models = { local = "ds-0731", work = "ds-0731" }
+requires_executables = ["opencode", "node", "curl"]
 requires_os = ["darwin"]
 requires_arch = ["arm64"]
 requires_tags = ["mac-mini", "dgx-client"]
 ```
 
-The wrappers do not implement a coding agent. They translate prompt transport,
-copy DeepCode's reported token total into Machinist's run record, and map
-DeepCode's persisted `processing`, `ask_permission`, `waiting_for_user`, and
-settled states to Herdr. Set `DEEPCODE_TELEMETRY_ENABLED=0` for a local-only
-deployment. The `local` API key used by the wrapper is a non-secret
-compatibility value for the unauthenticated loopback endpoint.
+Merge the supplied
+[`config/opencode-local-deepseek.jsonc`](config/opencode-local-deepseek.jsonc)
+provider into `~/.config/opencode/opencode.json`. The profile's endpoint
+environment then reaches OpenCode's native Herdr agent. The `local` API key
+used by direct wrappers is a non-secret compatibility value for the
+unauthenticated loopback endpoint.
+
+The DSH and Aider profiles are headless process profiles. Complete definitions,
+route order, direct launch commands, environment overrides, Windows launchers,
+and troubleshooting are in the [local DeepSeek stack
+guide](../../docs/local-deepseek-harnesses.md). DeepCode remains available only
+as an experimental opt-in and is not in the default route.
 
 1. Open Herdr's action menu and choose **Machinist: New interactive workflow**.
 2. Select a command and registered repository.
@@ -169,7 +182,7 @@ its pane to the current run or overwrite the current result.
 ## Harnesses and platforms
 
 Herdr starts a configured native agent kind or a self-reporting command.
-Machinist currently documents Codex, Claude Code, and DeepCode/DeepSeek
+Machinist currently documents OpenCode, DSH, Aider, Codex, and Claude Code
 examples, while the adapter fields remain configurable for additional agents.
 Subscription sessions, API-key providers, and local/DGX model endpoints remain
 worker-local.
@@ -190,7 +203,10 @@ executable set, and endpoint health.
   interactive worker** once.
 - **Agent CLI is not found:** ensure the executable is on the PATH inherited by
   the Herdr server, not only an unrelated login shell.
+- **Local DeepSeek returns 401 or model not found:** run
+  `scripts/smoke-local-deepseek.sh`; confirm it prints the loopback endpoint and
+  that `/v1/models` includes the selected model. Restart stale panes after
+  changing a wrapper.
 
-See the full [Herdr integration guide](../../docs/herdr.md) for the DeepCode DGX
-profile, lifecycle behavior, security boundaries, and platform-specific
-operation.
+See the full [Herdr integration guide](../../docs/herdr.md) for lifecycle
+behavior, security boundaries, and platform-specific operation.
