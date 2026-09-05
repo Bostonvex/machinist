@@ -1548,13 +1548,11 @@ func (s *Store) BindTerminal(ctx context.Context, runID string, request protocol
 	return tx.Commit()
 }
 
+// validErrorClass defers to config, which owns the closed set. Keeping a second
+// copy here is how a class the worker reports and the store accepts became one
+// a route could not be configured against.
 func validErrorClass(value string) bool {
-	switch value {
-	case "configuration", "authentication", "policy", "rate_limit", "capacity", "transient", "transport", "harness_crash", "timeout", "test_failure", "model_unavailable", "unknown", "cancelled":
-		return true
-	default:
-		return false
-	}
+	return config.ErrorClass(value).Valid()
 }
 
 func retryAllowed(state, errorClass, fallbackJSON string, attemptCount, maxAttempts int) bool {

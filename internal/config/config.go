@@ -654,10 +654,6 @@ func resolveCommand(definitionPath, name string, command Command, routes map[str
 }
 
 func validateRoutes(routes map[string]Route) error {
-	allowedFallbacks := map[string]bool{
-		"capacity": true, "rate_limit": true, "transient": true,
-		"model_unavailable": true, "harness_crash": true, "timeout": true,
-	}
 	for name, route := range routes {
 		if strings.TrimSpace(name) == "" || len(name) > 64 || !safeEnvironmentTag(strings.ToLower(strings.TrimSpace(name))) {
 			return errors.New("route names must be non-empty portable identifiers")
@@ -683,8 +679,8 @@ func validateRoutes(routes map[string]Route) error {
 			return fmt.Errorf("route %q max_total_tokens must be between 0 and 1000000000000", name)
 		}
 		for _, reason := range route.FallbackOn {
-			if !allowedFallbacks[reason] {
-				return fmt.Errorf("route %q fallback reason %q is unsupported", name, reason)
+			if !ErrorClass(reason).AllowsFallback() {
+				return fmt.Errorf("route %q fallback reason %q is unsupported; routes may fall back on %v", name, reason, FallbackClasses())
 			}
 		}
 	}
