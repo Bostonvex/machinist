@@ -663,3 +663,65 @@ func TestGitHubCLIReportsAPromotionTheForgeRefused(t *testing.T) {
 		t.Fatal("a refused promotion was reported as done")
 	}
 }
+
+// Reading the labels costs one call. The check it feeds runs on every marker
+// publication for a finished run, and paying for the event timeline there would
+// double the cost of confirming something the labels alone answer.
+func TestGitHubCLIIssueLabelsCostsOneCall(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(
+		scriptedGitHubResult{stdout: `{"number":7,"html_url":"https://github.com/o/r/issues/7","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:needs-human"},{"name":"bug"}]}`},
+	)
+	labels, err := cli.IssueLabels(context.Background(), "o/r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(labels, []string{"bug", "machinist:needs-human"}) {
+		t.Fatalf("labels = %v", labels)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("reading labels made %d calls: %v", len(runner.calls), runner.calls)
+	}
+	if joined := strings.Join(runner.calls[0], " "); !strings.Contains(joined, "repos/o/r/issues/7") {
+		t.Fatalf("labels were read from %q", joined)
+	}
+}
+
+// The labels of some other issue decide nothing about this one. A response that
+// does not answer the question asked is refused rather than returned.
+func TestGitHubCLIIssueLabelsRefusesAnAnswerAboutAnotherIssue(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(
+		scriptedGitHubResult{stdout: `{"number":8,"html_url":"https://github.com/o/r/issues/8","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"machinist:needs-human"}]}`},
+	)
+	labels, err := cli.IssueLabels(context.Background(), "o/r", 7)
+	if err == nil {
+		t.Fatalf("labels = %v, want an error: those belong to a different issue", labels)
+	}
+}
+
+// A refused read is an error, never an empty label set. An empty set is what an
+// issue with nothing on it looks like, and that reads as "the run finished".
+func TestGitHubCLIIssueLabelsReportsAFailedRead(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{stderr: "gh: HTTP 401", err: errors.New("exit status 1")})
+	labels, err := cli.IssueLabels(context.Background(), "o/r", 7)
+	if err == nil {
+		t.Fatalf("labels = %v, want the failed read reported", labels)
+	}
+	if labels != nil {
+		t.Fatalf("a failed read returned %v", labels)
+	}
+}
+
+// The same input guards the rest of the client applies, applied before anything
+// is executed.
+func TestGitHubCLIIssueLabelsRejectsUnsafeInputsBeforeExecution(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	if _, err := cli.IssueLabels(context.Background(), "not a repo", 7); err == nil {
+		t.Fatal("expected a malformed repository to be refused")
+	}
+	if _, err := cli.IssueLabels(context.Background(), "o/r", 0); err == nil {
+		t.Fatal("expected a non-positive issue number to be refused")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("refused input still reached the CLI: %v", runner.calls)
+	}
+}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/environment"
+	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
 )
 
@@ -1828,7 +1829,7 @@ func TestGitHubMarkerTargetsFollowTheRunAndStopWhenRecorded(t *testing.T) {
 	if len(targets) != 1 || targets[0].Repository != "owainlewis/machinist" || targets[0].IssueNumber != 396 || targets[0].RunState != "queued" {
 		t.Fatalf("admitted work is not a marker target: %#v", targets)
 	}
-	if err := store.RecordPublishedMarker(t.Context(), targets[0]); err != nil {
+	if err := store.RecordPublishedMarker(t.Context(), targets[0], factoryrun.StageClaimed); err != nil {
 		t.Fatal(err)
 	}
 	targets, err = store.GitHubMarkerTargets(t.Context())

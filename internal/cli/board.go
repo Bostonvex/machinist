@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/machinist/internal/config"
+	"github.com/owainlewis/machinist/internal/controlplane"
 	"github.com/owainlewis/machinist/internal/managedworker"
 	"github.com/spf13/cobra"
 )
@@ -153,6 +154,11 @@ func cardDetail(card boardCard) string {
 		return fmt.Sprintf("unrecognised state %q", card.State)
 	}
 	switch {
+	case card.Lane == string(controlplane.LaneParked):
+		// A parked card would otherwise read like a running one -- a worker
+		// name and nothing else -- when it is the one lane where nothing at all
+		// will happen until a person acts.
+		return "stopped, waiting on a person"
 	case card.AwaitingFrom != "":
 		return fmt.Sprintf("awaiting review of #%d", card.PullRequest)
 	case card.Verdict != "":

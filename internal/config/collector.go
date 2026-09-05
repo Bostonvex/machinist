@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // defaultCollectorDirName holds the telemetry database. It is deliberately not
@@ -33,17 +35,17 @@ const (
 // is this process consuming it, and a deployment can do either without the
 // other.
 type Collector struct {
-	Enabled          bool             `toml:"enabled"`
-	Listen           string           `toml:"listen"`
-	Database         string           `toml:"database"`
-	TokenFile        string           `toml:"token_file"`
-	IdentitySaltFile string           `toml:"identity_salt_file"`
-	Retention        string           `toml:"retention"`
-	ProviderInterval string           `toml:"provider_interval"`
-	Proxy            *CollectorProxy  `toml:"proxy"`
-	Vllm             *CollectorVllm   `toml:"vllm"`
-	Nvidia           *CollectorNvidia `toml:"nvidia"`
-	NvidiaRemote     *CollectorNvidia `toml:"nvidia_remote"`
+	Enabled          bool                 `toml:"enabled"`
+	Listen           string               `toml:"listen"`
+	Database         string               `toml:"database"`
+	TokenFile        string               `toml:"token_file"`
+	IdentitySaltFile string               `toml:"identity_salt_file"`
+	Retention        string               `toml:"retention"`
+	ProviderInterval string               `toml:"provider_interval"`
+	Proxy            *CollectorProxy      `toml:"proxy"`
+	Vllm             *CollectorVllm       `toml:"vllm"`
+	Nvidia           *CollectorNvidia     `toml:"nvidia"`
+	NvidiaRemote     CollectorNvidiaNodes `toml:"nvidia_remote"`
 
 	retention        time.Duration
 	providerInterval time.Duration
@@ -73,6 +75,69 @@ type CollectorVllm struct {
 type CollectorNvidia struct {
 	NodeID  string `toml:"node_id"`
 	SSHHost string `toml:"ssh_host"`
+}
+
+// CollectorNvidiaNodes are the remote GPU nodes under [collector.nvidia_remote].
+//
+// It is a sequence because a deployment reaches the number of nodes it reaches.
+// The older rule that each provider table appears at most once was standing in
+// for something narrower than it said: what has to hold is one status row per
+// named thing, so that an operator reading a failure can tell which node it is
+// about. node_id is that name, and two entries sharing one are refused. With
+// the name secured, the count of named things is free to be the count that
+// exists -- and a node nobody polls is invisible, which is the one state
+// indistinguishable from idle.
+type CollectorNvidiaNodes []CollectorNvidia
+
+// UnmarshalTOML accepts a node written either way.
+//
+// [collector.nvidia_remote] arrives as one call and [[collector.nvidia_remote]]
+// as one call per entry, so appending handles both without either form knowing
+// about the other. Both are kept because a deployment with a single remote node
+// should not have to be rewritten to stay where it is.
+//
+// Strictness is re-applied here. The outer decoder's DisallowUnknownFields does
+// not reach inside a custom unmarshaler, and silently accepting a misspelled
+// ssh_host would leave a node configured, unpolled, and reported as nothing at
+// all.
+func (nodes *CollectorNvidiaNodes) UnmarshalTOML(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	// A table written inline is a value rather than a document, so it is given
+	// a key to belong to before it is parsed. The header forms arrive already
+	// stripped to their bodies and parse as they stand.
+	if strings.HasPrefix(text, "{") {
+		var wrapper struct {
+			Node CollectorNvidia `toml:"node"`
+		}
+		if err := strictTOML("node = "+text, &wrapper); err != nil {
+			return err
+		}
+		*nodes = append(*nodes, wrapper.Node)
+		return nil
+	}
+	if strings.HasPrefix(text, "[") {
+		var wrapper struct {
+			Nodes []CollectorNvidia `toml:"nodes"`
+		}
+		if err := strictTOML("nodes = "+text, &wrapper); err != nil {
+			return err
+		}
+		*nodes = append(*nodes, wrapper.Nodes...)
+		return nil
+	}
+	var node CollectorNvidia
+	if err := strictTOML(text, &node); err != nil {
+		return err
+	}
+	*nodes = append(*nodes, node)
+	return nil
+}
+
+// strictTOML decodes one fragment, refusing keys the target does not have.
+func strictTOML(document string, target any) error {
+	decoder := toml.NewDecoder(strings.NewReader(document))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
 }
 
 // RetentionWindow is how long raw events are kept, resolved from Retention.
@@ -146,21 +211,53 @@ func applyCollectorDefaults(collector Collector) (Collector, error) {
 	if collector.Vllm != nil && strings.TrimSpace(collector.Vllm.EndpointID) == "" {
 		collector.Vllm.EndpointID = "vllm-primary"
 	}
-	if collector.Nvidia != nil && strings.TrimSpace(collector.Nvidia.NodeID) == "" {
-		collector.Nvidia.NodeID = "local-nvidia"
-	}
-	if collector.NvidiaRemote != nil {
-		if strings.TrimSpace(collector.NvidiaRemote.NodeID) == "" {
-			collector.NvidiaRemote.NodeID = "remote-nvidia"
-		}
-		if strings.TrimSpace(collector.NvidiaRemote.SSHHost) == "" {
-			return Collector{}, errors.New("collector.nvidia_remote.ssh_host is required: the local GPUs are [collector.nvidia]")
-		}
-	}
 	if collector.Nvidia != nil && strings.TrimSpace(collector.Nvidia.SSHHost) != "" {
 		return Collector{}, errors.New("collector.nvidia polls this machine: name another host under [collector.nvidia_remote]")
 	}
+	if err := nameCollectorNvidiaNodes(&collector); err != nil {
+		return Collector{}, err
+	}
 	return collector, nil
+}
+
+// nameCollectorNvidiaNodes fills in and checks the identity of every GPU node.
+//
+// Every node ends up with a node_id, and no two of them -- local or remote --
+// share it. The name is what a sample is filed under and what the provider's
+// status row is keyed by, so two nodes answering to one name produce a chart
+// that averages two machines into a number describing neither, and a failure
+// nobody can attribute.
+func nameCollectorNvidiaNodes(collector *Collector) error {
+	named := map[string]string{}
+	if collector.Nvidia != nil {
+		collector.Nvidia.NodeID = strings.TrimSpace(collector.Nvidia.NodeID)
+		if collector.Nvidia.NodeID == "" {
+			collector.Nvidia.NodeID = "local-nvidia"
+		}
+		named[collector.Nvidia.NodeID] = "collector.nvidia"
+	}
+	for index := range collector.NvidiaRemote {
+		node := &collector.NvidiaRemote[index]
+		node.NodeID = strings.TrimSpace(node.NodeID)
+		node.SSHHost = strings.TrimSpace(node.SSHHost)
+		if node.NodeID == "" {
+			// The default names "the remote node", which is only a name while
+			// there is one of them. Defaulting past that would hand two
+			// machines the same identity on an operator's behalf.
+			if len(collector.NvidiaRemote) > 1 {
+				return errors.New("collector.nvidia_remote.node_id is required when more than one remote node is configured: which machine a reading describes is the whole content of the reading")
+			}
+			node.NodeID = "remote-nvidia"
+		}
+		if node.SSHHost == "" {
+			return errors.New("collector.nvidia_remote.ssh_host is required: the local GPUs are [collector.nvidia]")
+		}
+		if owner, taken := named[node.NodeID]; taken {
+			return fmt.Errorf("collector.nvidia_remote.node_id %q is already used by %s: two nodes under one name share a status row, and an operator reading it could not tell which of them was failing", node.NodeID, owner)
+		}
+		named[node.NodeID] = "collector.nvidia_remote"
+	}
+	return nil
 }
 
 // applyCollectorProxyDefaults fills in and checks the model proxy's table.

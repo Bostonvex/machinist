@@ -111,7 +111,7 @@ func TestARemoteReadNeverWaitsAtAPrompt(t *testing.T) {
 	if !strings.Contains(joined, " -- spark.local ") {
 		t.Fatalf("option parsing was not ended before the destination: %v", argv)
 	}
-	if provider.Name() != "nvidia-smi-remote" {
+	if provider.Name() != "nvidia-smi-remote:dgx-spark" {
 		t.Fatalf("a remote read reported itself as local: %q", provider.Name())
 	}
 }
