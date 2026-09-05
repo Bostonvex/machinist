@@ -17,6 +17,11 @@ const MarkerKey = "FACTORY:RUN"
 // as machine evidence.
 const markerAnchor = "<!-- machinist:" + MarkerKey + " -->"
 
+// IsMarker reports whether a comment body is a rendered marker. A store uses it
+// to find the one comment on an issue that carries evidence, without having to
+// know how a marker is rendered.
+func IsMarker(body string) bool { return strings.Contains(body, markerAnchor) }
+
 // Render produces the marker comment body. It is deterministic (checks are
 // sorted) so parse(Render(e)) is a stable round trip.
 func Render(e Evidence) (string, error) {
@@ -44,6 +49,9 @@ func Render(e Evidence) (string, error) {
 	}
 	if e.PR != "" {
 		fmt.Fprintf(&b, "pr: %s\n", e.PR)
+	}
+	if e.Stage != "" {
+		fmt.Fprintf(&b, "stage: %s\n", e.Stage)
 	}
 	if e.Verdict != "" {
 		fmt.Fprintf(&b, "verdict: %s\n", e.Verdict)
@@ -97,6 +105,8 @@ func Parse(body string) (Evidence, error) {
 			e.Branch = value
 		case "pr":
 			e.PR = value
+		case "stage":
+			e.Stage = Stage(value)
 		case "verdict":
 			e.Verdict = review.Verdict(value)
 		case "issues":

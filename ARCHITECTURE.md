@@ -18,7 +18,12 @@ Machinist owns process execution, not orchestration.
   carries one run's evidence across sessions. It reads only the lines after the
   marker anchor, requires an explicit state on every check, and accepts only the
   verdicts `internal/review` can produce, so unreadable evidence is an error
-  rather than a passing default.
+  rather than a passing default. The control plane publishes that marker for
+  every GitHub-triggered run: a scheduler pass writes the run's stage to its
+  issue and records what it wrote, so an unchanged run makes no GitHub call and
+  a run that ended while the control plane was down is still described when it
+  returns. The marker is found by its own content, so the comment is edited in
+  place rather than duplicated.
 
 Each job has exactly one run. The database enforces this with a unique `runs.job_id`.
 Terminal state comes only from the process result. There is no internal stage model.

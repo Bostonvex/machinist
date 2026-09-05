@@ -34,6 +34,7 @@ run: run-1
 attempt: attempt-1
 branch: codex/example
 pr: 23
+stage: running
 verdict: ready-for-human-review
 issues: #4
 check: Linux checks:success:https://github.com/...
@@ -51,10 +52,47 @@ updated_at: 2026-09-04T12:00:00Z
 | `attempt` | when known | Attempt id |
 | `branch` | when known | Task branch name |
 | `pr` | when known | Pull request number |
+| `stage` | when known | How far the run has got, below |
 | `verdict` | when reviewed | One of the three review verdicts, below |
 | `issues` | optional | Comma-separated issue references |
 | `check` | repeatable | `name:state[:details-url]` |
 | `updated_at` | optional | RFC 3339, UTC |
+
+### Stages
+
+`stage` is a closed set, and it is the field that makes a republished marker
+material rather than a timestamp bump:
+
+| Stage | Meaning |
+|-------|---------|
+| `claimed` | the run exists and owns the issue, but has not started |
+| `running` | an attempt is executing |
+| `complete` | the run finished on its own terms |
+| `failed` | the run finished without producing its work |
+| `parked` | the run stopped and is waiting on a human |
+
+Operator cancellation parks rather than fails: nothing was demonstrated about
+the work, so the next reader is told to look, not that the work is beyond
+saving.
+
+### Who writes it
+
+Machinist's control plane publishes the marker for every GitHub-triggered run,
+on a scheduler pass, and records what it published. Three consequences worth
+knowing before reading a marker:
+
+- **A control plane with nothing new to say makes no GitHub call at all**, so
+  the absence of a recent write is not evidence that anything is wrong.
+- **Recovery is unbounded.** A run that ended while the control plane was down
+  is still waiting to be described when it returns, however much later.
+- **History is not re-described.** The database upgrade that turns publication
+  on records finished work as already described, so switching it on does not
+  comment on every issue the control plane has ever worked. Work still in
+  flight is left undescribed on purpose, and gets its marker on the next pass.
+- **The published marker carries identity and stage only.** Branch, pull
+  request, checks, and verdict are not part of a run's recorded state, so the
+  control plane cannot report them and does not guess. An agent that knows them
+  may write them; the schema is the same either way.
 
 ### The parts that fail closed
 
@@ -75,8 +113,16 @@ permissive default.
   the run has not been reviewed yet. The writer cannot record a verdict the
   review engine would reject, and specifically cannot record an approval the
   engine can never produce.
-- **Republishing unchanged evidence writes nothing**, so a retried handoff does
-  not churn the issue.
+- **`stage` is a closed set too.** A stage a reader does not recognize is an
+  error, and a run state the writer cannot map onto a stage produces no marker
+  at all: a guessed stage is worse than an absent one.
+- **Republishing unchanged evidence writes nothing.** The stored marker is
+  compared as evidence, not as bytes, so a clock that has moved on is not a
+  change and a retried handoff does not churn the issue. A stamped `updated_at`
+  therefore always marks something that actually changed.
+- **The marker is found by its content, not by a remembered id**, so a writer
+  that has restarted -- or that never wrote the marker -- edits the existing
+  comment instead of adding a second one.
 
 ## Role return payloads
 

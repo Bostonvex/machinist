@@ -73,7 +73,11 @@ Port of `factory/protocol/*.md`:
   `review.DefaultProtectedPaths` — the two copies must be changed together.
 - [`internal/factoryrun`](../../internal/factoryrun) renders and parses the
   `FACTORY:RUN` marker described in
-  [protocol/factory-run-handoff.md](protocol/factory-run-handoff.md).
+  [protocol/factory-run-handoff.md](protocol/factory-run-handoff.md). The
+  control plane publishes it: every GitHub-triggered run has its stage written
+  to the issue it was requested on. What it cannot yet report is what it does
+  not know — branch, pull request, checks, and verdict are not part of a run's
+  recorded state, so the published marker carries identity and stage only.
 
 ## Not yet enforced
 
@@ -88,3 +92,6 @@ not exist:
   documented, not enforced, and enable nothing until a repository is named.
 - **The two label vocabularies** in [protocol/labels.md](protocol/labels.md) are
   not yet reconciled.
+- **The review engine has no caller.** `internal/review` decides correctly and
+  nothing asks it to. Until a run's reviewer output is fed through it, a
+  published marker never carries a verdict.

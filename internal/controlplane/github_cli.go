@@ -21,6 +21,10 @@ const (
 	maxGitHubCandidates         = 100
 	defaultGitHubArgumentBytes  = 96 << 10
 	maxGitHubErrorBytes         = 512
+	// maxGitHubCommentBytes is GitHub's own limit on an issue comment body.
+	// Refusing an oversized body here turns a rejected write into a clear
+	// local error instead of an HTTP 422 from the far side.
+	maxGitHubCommentBytes = 65536
 )
 
 var (
@@ -295,6 +299,110 @@ func (g *GitHubCLI) AcknowledgeRequest(ctx context.Context, repository string, n
 		return err
 	}
 	return nil
+}
+
+// GitHubIssueComment is one comment on an issue, reduced to what marker
+// maintenance needs: the identifier that lets it be edited in place, and the
+// body that says whether it is the marker.
+type GitHubIssueComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+}
+
+// ListIssueComments returns every comment on an issue, oldest first.
+func (g *GitHubCLI) ListIssueComments(ctx context.Context, repository string, number int) ([]GitHubIssueComment, error) {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	if number <= 0 {
+		return nil, errors.New("github issue number must be positive")
+	}
+	endpoint := fmt.Sprintf("repos/%s/issues/%d/comments?per_page=100", repository, number)
+	stdout, err := g.run(ctx, "read issue comments", []string{
+		"api", "--method", "GET", "--paginate", "--slurp",
+		"-H", "Accept: application/vnd.github+json", endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	comments, err := parseGitHubIssueComments(stdout)
+	if err != nil {
+		return nil, malformedGitHubOutput("read issue comments", err, stdout)
+	}
+	return comments, nil
+}
+
+// CreateIssueComment adds a comment to an issue.
+func (g *GitHubCLI) CreateIssueComment(ctx context.Context, repository string, number int, body string) error {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return err
+	}
+	if number <= 0 {
+		return errors.New("github issue number must be positive")
+	}
+	if err := validateGitHubCommentBody(body); err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("repos/%s/issues/%d/comments", repository, number)
+	_, err = g.run(ctx, "create issue comment", []string{
+		"api", "--method", "POST", "-H", "Accept: application/vnd.github+json", endpoint, "-f", "body=" + body,
+	})
+	return err
+}
+
+// UpdateIssueComment replaces the body of an existing comment.
+func (g *GitHubCLI) UpdateIssueComment(ctx context.Context, repository string, commentID int64, body string) error {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return err
+	}
+	if commentID <= 0 {
+		return errors.New("github comment id must be positive")
+	}
+	if err := validateGitHubCommentBody(body); err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("repos/%s/issues/comments/%d", repository, commentID)
+	_, err = g.run(ctx, "update issue comment", []string{
+		"api", "--method", "PATCH", "-H", "Accept: application/vnd.github+json", endpoint, "-f", "body=" + body,
+	})
+	return err
+}
+
+func validateGitHubCommentBody(body string) error {
+	if strings.TrimSpace(body) == "" {
+		return errors.New("github comment body is required")
+	}
+	if len(body) > maxGitHubCommentBytes {
+		return fmt.Errorf("github comment body is %d bytes, limit is %d", len(body), maxGitHubCommentBytes)
+	}
+	return nil
+}
+
+// parseGitHubIssueComments reads either a paginated (--slurp) or a single-page
+// comment listing. A comment without a usable identifier is an error: it could
+// not be edited in place, and silently skipping it would grow a second marker.
+func parseGitHubIssueComments(output []byte) ([]GitHubIssueComment, error) {
+	var pages [][]GitHubIssueComment
+	if err := decodeSingleJSON(output, &pages); err != nil {
+		var flat []GitHubIssueComment
+		if flatErr := decodeSingleJSON(output, &flat); flatErr != nil {
+			return nil, err
+		}
+		pages = [][]GitHubIssueComment{flat}
+	}
+	comments := make([]GitHubIssueComment, 0, len(pages))
+	for _, page := range pages {
+		for _, comment := range page {
+			if comment.ID <= 0 {
+				return nil, fmt.Errorf("issue comment has no usable id")
+			}
+			comments = append(comments, comment)
+		}
+	}
+	return comments, nil
 }
 
 // GitHubIssueIsEligible applies local intake guards before admission.
