@@ -251,11 +251,11 @@ func TestTheProxyMeasuresAForwardedCall(t *testing.T) {
 	if completed.Attributes["duration_ms"].(float64) < 0 {
 		t.Fatalf("duration_ms = %v", completed.Attributes["duration_ms"])
 	}
-	if completed.SpanID == "" || completed.Producer.Name != "machinist-model-proxy" {
+	if value(completed.SpanID) == "" || completed.Producer.Name != "machinist-model-proxy" {
 		t.Fatalf("event identity = %+v", completed)
 	}
 	started, _ := sink.last(ModelRequestStarted)
-	if started.SpanID != completed.SpanID {
+	if value(started.SpanID) != value(completed.SpanID) {
 		t.Fatal("the start and the completion are not the same call")
 	}
 }
@@ -514,7 +514,7 @@ func TestAStreamedCallIsMeasuredFromItsContent(t *testing.T) {
 	if duration := completed.Attributes["duration_ms"].(float64); decode > duration {
 		t.Fatalf("decode_ms %v exceeds duration_ms %v", decode, duration)
 	}
-	if first.SpanID != completed.SpanID {
+	if value(first.SpanID) != value(completed.SpanID) {
 		t.Fatal("the first token and the completion are not the same call")
 	}
 }
@@ -602,4 +602,14 @@ func TestAnUpstreamThatSaysNothingAboutTokensProducesNoTokenAttributes(t *testin
 			t.Fatalf("%s was reported for a call nothing said anything about", name)
 		}
 	}
+}
+
+// value reads a nullable wire field. The wire type is a pointer because the
+// collector distinguishes an absent identifier from an empty one; a test that
+// only cares which identifier was recorded does not.
+func value(pointer *string) string {
+	if pointer == nil {
+		return ""
+	}
+	return *pointer
 }
