@@ -195,10 +195,40 @@ func (s *Server) forward(response http.ResponseWriter, request *http.Request) {
 	})
 
 	request = request.WithContext(context.WithValue(request.Context(), callKey{}, measured))
-	s.proxy.ServeHTTP(response, request)
 
-	// A failure has already reported itself, with the reason it knows and this
-	// point does not.
+	// ReverseProxy panics with http.ErrAbortHandler when the response body
+	// copy fails after the headers have gone out — an upstream that stopped
+	// speaking mid-generation, most often. Without this the panic would unwind
+	// straight past the reporting below, and the call would be left recorded as
+	// started and never finished: the exact shape an operator reads as a hung
+	// agent. The panic is re-raised afterwards, because aborting the client
+	// connection is the right answer to a truncated response; only the silence
+	// about it was wrong.
+	aborted := true
+	defer func() {
+		if !aborted {
+			return
+		}
+		reason := recover()
+		s.settle(measured, reason)
+		if reason != nil {
+			panic(reason)
+		}
+	}()
+	s.proxy.ServeHTTP(response, request)
+	aborted = false
+
+	s.settle(measured, nil)
+}
+
+// settle emits the one terminal event a forwarded call is owed.
+//
+// reason is non-nil when the forward was abandoned rather than completed. Every
+// path through here emits exactly one of model.completed or model.failed, which
+// is what lets a reader treat a call with neither as still running.
+func (s *Server) settle(measured *call, reason any) {
+	// A transport failure has already reported itself, with the reason it
+	// knows and this point does not.
 	if measured.failed {
 		return
 	}
@@ -221,6 +251,16 @@ func (s *Server) forward(response http.ResponseWriter, request *http.Request) {
 	}
 	if measured.read != nil {
 		measured.read.attributes(attributes)
+	}
+	if reason != nil {
+		// The upstream stopped part way through an answer the client had
+		// already begun receiving. Recorded as a failure rather than a
+		// completion with a 200 on it, because the status line described a
+		// response that did not arrive.
+		attributes["error_category"] = "upstream_transport"
+		attributes["error_code"] = "response_aborted"
+		s.emit(ModelFailed, measured, finished, attributes)
+		return
 	}
 	if measured.status < 400 && measured.read != nil && measured.read.streamError != "" {
 		// The headers said the call succeeded and then the stream said it did
