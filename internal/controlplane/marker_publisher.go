@@ -33,7 +33,7 @@ func runStage(state string) (factoryrun.Stage, error) {
 
 // publishFactoryRunMarkers writes the FACTORY:RUN marker for every
 // GitHub-triggered run whose issue does not yet describe where the run has got
-// to. Publication is bookkeeping on the issue and nothing else: it writes no
+// to, or what was decided about it. Publication is bookkeeping on the issue and nothing else: it writes no
 // label, admits no request, and never merges or deploys.
 //
 // One issue failing does not stop the rest, because a marker is per-run
@@ -66,7 +66,11 @@ func (s *Server) publishFactoryRunMarker(ctx context.Context, target GitHubMarke
 		AttemptID: target.AttemptID,
 		Repo:      target.Repository,
 		Stage:     stage,
+		Verdict:   target.Verdict,
 		Issues:    []string{"#" + strconv.Itoa(target.IssueNumber)},
+	}
+	if target.PullRequest > 0 {
+		evidence.PR = "#" + strconv.Itoa(target.PullRequest)
 	}
 	if _, err := s.markers.Publish(ctx, target.Repository, target.IssueNumber, evidence); err != nil {
 		return err

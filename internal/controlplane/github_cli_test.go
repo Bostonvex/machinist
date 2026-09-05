@@ -437,3 +437,48 @@ func TestGitHubCLIRefusesOversizedCommentBody(t *testing.T) {
 		t.Fatalf("a body GitHub would reject must not reach the CLI: %#v", runner.calls)
 	}
 }
+
+// The changed paths of a review come from GitHub's diff, across every page of
+// it. A rename reports both names, because moving a file out of a protected
+// path is still a change to that path.
+func TestGitHubCLIListsPullRequestFilesIncludingRenames(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[
+  [{"filename":"internal/review/engine.go"}],
+  [{"filename":"docs/governance/roles/reviewer.md","previous_filename":"factory/roles/reviewer.md"}]
+]`})
+
+	paths, err := cli.ListPullRequestFiles(context.Background(), "owner/name", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"internal/review/engine.go", "docs/governance/roles/reviewer.md", "factory/roles/reviewer.md"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected paths: %#v", paths)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "--paginate") || !strings.Contains(call, "repos/owner/name/pulls/12/files") {
+		t.Fatalf("file listing did not page the pull request's files: %s", call)
+	}
+	if strings.Contains(call, "sh -c") {
+		t.Fatalf("file listing unexpectedly used a shell: %s", call)
+	}
+}
+
+// A path that cannot be read cannot be shown to be outside the protected set,
+// so an unnamed file stops the listing rather than quietly shrinking the diff.
+func TestGitHubCLIRejectsAPullRequestFileWithoutAName(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{stdout: `[[{"additions":3}]]`})
+	if _, err := cli.ListPullRequestFiles(context.Background(), "owner/name", 12); err == nil {
+		t.Fatal("expected an error for a file with no name")
+	}
+}
+
+func TestGitHubCLIRefusesAnUnnumberedPullRequest(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI()
+	if _, err := cli.ListPullRequestFiles(context.Background(), "owner/name", 0); err == nil {
+		t.Fatal("expected an error for pull request 0")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("github was called anyway: %#v", runner.calls)
+	}
+}

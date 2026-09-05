@@ -18,6 +18,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/environment"
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/review"
 	_ "modernc.org/sqlite"
 )
 
@@ -29,6 +30,7 @@ var (
 	ErrTriggerMissing                  = errors.New("trigger state does not exist")
 	ErrTriggerStale                    = errors.New("trigger state configuration changed")
 	ErrTriggerPreviousGenerationActive = errors.New("previous trigger configuration still has active work")
+	ErrReviewScope                     = errors.New("review does not address the reviewer's repository")
 )
 
 const leaseDuration = 30 * time.Second
@@ -200,6 +202,13 @@ type GitHubMarkerTarget struct {
 	RunID       string
 	AttemptID   string
 	RunState    string
+	// Verdict is the strictest verdict recorded against the run, or empty
+	// while nobody has reviewed it. Combining reviews this way means a second
+	// reviewer can add a constraint but never lift one.
+	Verdict review.Verdict
+	// PullRequest is the pull request the most recent review judged, or zero
+	// when the run has not been reviewed.
+	PullRequest int
 }
 
 type RunOutput struct {
@@ -227,7 +236,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 9
+	const schemaVersion = 10
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -289,6 +298,12 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 		if err := s.upgradeToVersionNine(ctx); err != nil {
 			return fmt.Errorf("upgrade database schema to version 9: %w", err)
 		}
+		version = 9
+	}
+	if version == 9 {
+		if err := s.upgradeToVersionTen(ctx); err != nil {
+			return fmt.Errorf("upgrade database schema to version 10: %w", err)
+		}
 	}
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -328,9 +343,10 @@ CREATE TABLE IF NOT EXISTS github_trigger_requests (trigger_identity TEXT NOT NU
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_trigger_occurrence ON jobs(trigger_identity,occurrence_key) WHERE trigger_identity<>'' AND occurrence_key<>'';
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_fixed_trigger ON jobs(trigger_identity) WHERE fixed_trigger=1 AND state IN ('queued','running');
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_trigger_subject ON jobs(trigger_subject) WHERE trigger_subject<>'' AND state IN ('queued','running');
-CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, published_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS github_run_markers (job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE, run_state TEXT NOT NULL, attempt_id TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', pull_request INTEGER NOT NULL DEFAULT 0, published_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS run_reviews (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, reviewer_run_id TEXT NOT NULL, pull_request INTEGER NOT NULL, verdict TEXT NOT NULL, high_risk INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', findings TEXT NOT NULL DEFAULT '[]', protected_paths TEXT NOT NULL DEFAULT '[]', reasons TEXT NOT NULL DEFAULT '[]', recorded_at TEXT NOT NULL, PRIMARY KEY(run_id,reviewer_run_id));
 CREATE INDEX IF NOT EXISTS github_trigger_requests_reconciliation ON github_trigger_requests(trigger_identity,needs_reconciliation,requested_at);
-PRAGMA user_version=9;`
+PRAGMA user_version=10;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -368,6 +384,41 @@ JOIN jobs j ON j.id=g.job_id
 JOIN runs r ON r.job_id=j.id
 WHERE g.state='admitted' AND j.state IN ('succeeded','failed','cancelled')`, now); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// upgradeToVersionTen widens the published-marker record to cover the review
+// verdict and the pull request it was given on. Without them a run whose only
+// change is that it has now been reviewed would look already described, and the
+// verdict would never reach the issue. Existing rows keep no verdict, which is
+// the truth about them: they were published before any review was recorded.
+func (s *Store) upgradeToVersionTen(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var markersTable int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='github_run_markers'`).Scan(&markersTable); err != nil {
+		return err
+	}
+	if markersTable > 0 {
+		for _, column := range []struct{ name, definition string }{
+			{"verdict", `ALTER TABLE github_run_markers ADD COLUMN verdict TEXT NOT NULL DEFAULT ''`},
+			{"pull_request", `ALTER TABLE github_run_markers ADD COLUMN pull_request INTEGER NOT NULL DEFAULT 0`},
+		} {
+			var present int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('github_run_markers') WHERE name=?`, column.name).Scan(&present); err != nil {
+				return err
+			}
+			if present > 0 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, column.definition); err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
@@ -1910,15 +1961,17 @@ func (s *Store) RunOutput(ctx context.Context, runID string) (RunOutput, error) 
 func (s *Store) GitHubMarkerTargets(ctx context.Context) ([]GitHubMarkerTarget, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH marker_runs AS (
  SELECT g.repository AS repository,g.issue_number AS issue_number,j.id AS job_id,r.id AS run_id,r.state AS run_state,j.created_at AS created_at,
-  COALESCE(NULLIF(r.current_attempt_id,''),(SELECT a.id FROM attempts a WHERE a.run_id=r.id ORDER BY a.ordinal DESC LIMIT 1),'') AS attempt_id
+  COALESCE(NULLIF(r.current_attempt_id,''),(SELECT a.id FROM attempts a WHERE a.run_id=r.id ORDER BY a.ordinal DESC LIMIT 1),'') AS attempt_id,
+  COALESCE((SELECT group_concat(v.verdict,' ') FROM run_reviews v WHERE v.run_id=r.id),'') AS verdicts,
+  COALESCE((SELECT v.pull_request FROM run_reviews v WHERE v.run_id=r.id ORDER BY v.recorded_at DESC,v.reviewer_run_id DESC LIMIT 1),0) AS pull_request
  FROM github_trigger_requests g
  JOIN jobs j ON j.id=g.job_id
  JOIN runs r ON r.job_id=j.id
  WHERE g.state='admitted')
-SELECT marker_runs.repository,marker_runs.issue_number,marker_runs.job_id,marker_runs.run_id,marker_runs.attempt_id,marker_runs.run_state
+SELECT marker_runs.repository,marker_runs.issue_number,marker_runs.job_id,marker_runs.run_id,marker_runs.attempt_id,marker_runs.run_state,marker_runs.verdicts,marker_runs.pull_request,
+ m.job_id IS NULL,COALESCE(m.run_state,''),COALESCE(m.attempt_id,''),COALESCE(m.verdict,''),COALESCE(m.pull_request,0)
 FROM marker_runs
 LEFT JOIN github_run_markers m ON m.job_id=marker_runs.job_id
-WHERE m.job_id IS NULL OR m.run_state<>marker_runs.run_state OR m.attempt_id<>marker_runs.attempt_id
 ORDER BY marker_runs.created_at`)
 	if err != nil {
 		return nil, err
@@ -1927,15 +1980,45 @@ ORDER BY marker_runs.created_at`)
 	targets := []GitHubMarkerTarget{}
 	for rows.Next() {
 		var target GitHubMarkerTarget
-		if err := rows.Scan(&target.Repository, &target.IssueNumber, &target.JobID, &target.RunID, &target.AttemptID, &target.RunState); err != nil {
+		var verdicts, publishedState, publishedAttempt, publishedVerdict string
+		var publishedPullRequest int
+		var unpublished bool
+		if err := rows.Scan(&target.Repository, &target.IssueNumber, &target.JobID, &target.RunID, &target.AttemptID, &target.RunState, &verdicts, &target.PullRequest,
+			&unpublished, &publishedState, &publishedAttempt, &publishedVerdict, &publishedPullRequest); err != nil {
 			return nil, err
 		}
-		targets = append(targets, target)
+		verdict, err := strictestVerdict(verdicts)
+		if err != nil {
+			return nil, fmt.Errorf("run %s: %w", target.RunID, err)
+		}
+		target.Verdict = verdict
+		if unpublished || publishedState != target.RunState || publishedAttempt != target.AttemptID ||
+			publishedVerdict != string(target.Verdict) || publishedPullRequest != target.PullRequest {
+			targets = append(targets, target)
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
 	return targets, nil
+}
+
+// strictestVerdict folds the verdicts recorded against one run. The ordering
+// lives in internal/review and not in SQL, so there is one definition of what
+// "stricter" means. A stored verdict outside the contract stops the publication
+// pass rather than being rounded down to something publishable: it can only get
+// there by editing the database by hand, and guessing what was meant would put
+// a judgement nobody made on a GitHub issue.
+func strictestVerdict(joined string) (review.Verdict, error) {
+	fields := strings.Fields(joined)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	verdicts := make([]review.Verdict, 0, len(fields))
+	for _, field := range fields {
+		verdicts = append(verdicts, review.Verdict(field))
+	}
+	return review.Strictest(verdicts...)
 }
 
 // RecordPublishedMarker records the run state a job's marker now describes, so
@@ -1947,10 +2030,117 @@ func (s *Store) RecordPublishedMarker(ctx context.Context, target GitHubMarkerTa
 		return errors.New("marker job id is required")
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO github_run_markers(job_id,run_state,attempt_id,published_at) VALUES(?,?,?,?)
-ON CONFLICT(job_id) DO UPDATE SET run_state=excluded.run_state,attempt_id=excluded.attempt_id,published_at=excluded.published_at`,
-		target.JobID, target.RunState, target.AttemptID, now); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO github_run_markers(job_id,run_state,attempt_id,verdict,pull_request,published_at) VALUES(?,?,?,?,?,?)
+ON CONFLICT(job_id) DO UPDATE SET run_state=excluded.run_state,attempt_id=excluded.attempt_id,verdict=excluded.verdict,pull_request=excluded.pull_request,published_at=excluded.published_at`,
+		target.JobID, target.RunState, target.AttemptID, string(target.Verdict), target.PullRequest, now); err != nil {
 		return fmt.Errorf("record published marker: %w", err)
+	}
+	return nil
+}
+
+// ReviewSubject is the two parties of a submitted review as the control plane
+// records them, together with the repository the work belongs to.
+//
+// Both identities are read from the runs rather than taken from the
+// submission. A run cannot say who wrote the change it is reviewing, and it
+// cannot say who it is: independence is decided from what the control plane
+// already knows.
+type ReviewSubject struct {
+	Repository string
+	Author     review.Party
+	Reviewer   review.Party
+}
+
+// ReviewSubject loads the parties of a review of reviewedRunID submitted by the
+// run named in the submission, after checking that the submitting run holds a
+// live lease. A review offered without the reviewer's own lease is refused: the
+// verdict is recorded against real work, so it must come from the run doing it.
+func (s *Store) ReviewSubject(ctx context.Context, reviewedRunID string, submission protocol.ReviewSubmission) (ReviewSubject, error) {
+	var subject ReviewSubject
+	var state, instanceID, leaseToken string
+	var leaseExpiresAt sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT r.state,COALESCE(r.worker_instance,''),COALESCE(r.lease_token,''),r.lease_expires_at,r.repository,r.role,`+runAgentSQL+` FROM runs r WHERE r.id=?`,
+		submission.ReviewerRun).Scan(&state, &instanceID, &leaseToken, &leaseExpiresAt, &subject.Repository, &subject.Reviewer.Role, &subject.Reviewer.Agent); err != nil {
+		return ReviewSubject{}, err
+	}
+	if subtle.ConstantTimeCompare([]byte(instanceID), []byte(submission.InstanceID)) != 1 || subtle.ConstantTimeCompare([]byte(leaseToken), []byte(submission.LeaseToken)) != 1 {
+		return ReviewSubject{}, ErrLeaseConflict
+	}
+	if state != "running" {
+		return ReviewSubject{}, ErrRunState
+	}
+	if !leaseExpiresAt.Valid || leaseExpiresAt.Int64 <= s.now().UTC().UnixNano() {
+		return ReviewSubject{}, ErrLeaseConflict
+	}
+	subject.Reviewer.RunID = submission.ReviewerRun
+
+	var authorRepository string
+	if err := s.db.QueryRowContext(ctx, `SELECT r.repository,r.role,`+runAgentSQL+` FROM runs r WHERE r.id=?`, reviewedRunID).
+		Scan(&authorRepository, &subject.Author.Role, &subject.Author.Agent); err != nil {
+		return ReviewSubject{}, err
+	}
+	subject.Author.RunID = reviewedRunID
+	if authorRepository != subject.Repository {
+		return ReviewSubject{}, fmt.Errorf("%w: run %s works on %s, not %s", ErrReviewScope, reviewedRunID, authorRepository, subject.Repository)
+	}
+	return subject, nil
+}
+
+// runAgentSQL is the identity a run acted under: the profile of the attempt
+// that actually ran, falling back to the profile the run was dispatched with.
+// The attempt is preferred because a fallback can move a run onto a different
+// profile than the one it was queued with, and it is the profile that ran that
+// has to be independent.
+const runAgentSQL = `COALESCE(NULLIF((SELECT a.profile FROM attempts a WHERE a.run_id=r.id ORDER BY a.ordinal DESC LIMIT 1),''),r.profile)`
+
+// RecordedReview is one decided review, ready to be written against the run it
+// judged.
+type RecordedReview struct {
+	RunID          string
+	ReviewerRunID  string
+	PullRequest    int
+	Verdict        review.Verdict
+	HighRisk       bool
+	Note           string
+	Findings       []review.Finding
+	ProtectedPaths []string
+	Reasons        []string
+}
+
+// RecordReview stores one review of a run. A reviewer that submits twice
+// replaces its own earlier review and nobody else's: the effective verdict for
+// a run stays the strictest of all its reviewers, so a re-review can tighten
+// the result but cannot quietly clear another reviewer's objection.
+func (s *Store) RecordReview(ctx context.Context, recorded RecordedReview) error {
+	if strings.TrimSpace(recorded.RunID) == "" || strings.TrimSpace(recorded.ReviewerRunID) == "" {
+		return errors.New("review needs both the reviewed run and the reviewing run")
+	}
+	if recorded.PullRequest <= 0 {
+		return errors.New("review pull request must be positive")
+	}
+	if !recorded.Verdict.Valid() {
+		return fmt.Errorf("review verdict %q is not one the contract defines", recorded.Verdict)
+	}
+	findings, err := json.Marshal(recorded.Findings)
+	if err != nil {
+		return fmt.Errorf("encode review findings: %w", err)
+	}
+	protectedPaths, err := json.Marshal(recorded.ProtectedPaths)
+	if err != nil {
+		return fmt.Errorf("encode review protected paths: %w", err)
+	}
+	reasons, err := json.Marshal(recorded.Reasons)
+	if err != nil {
+		return fmt.Errorf("encode review reasons: %w", err)
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO run_reviews(run_id,reviewer_run_id,pull_request,verdict,high_risk,note,findings,protected_paths,reasons,recorded_at)
+VALUES(?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(run_id,reviewer_run_id) DO UPDATE SET pull_request=excluded.pull_request,verdict=excluded.verdict,high_risk=excluded.high_risk,note=excluded.note,
+findings=excluded.findings,protected_paths=excluded.protected_paths,reasons=excluded.reasons,recorded_at=excluded.recorded_at`,
+		recorded.RunID, recorded.ReviewerRunID, recorded.PullRequest, string(recorded.Verdict), recorded.HighRisk, recorded.Note,
+		string(findings), string(protectedPaths), string(reasons), now); err != nil {
+		return fmt.Errorf("record review: %w", err)
 	}
 	return nil
 }

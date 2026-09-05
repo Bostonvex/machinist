@@ -8,6 +8,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/review"
 )
 
 // admitGitHubJob runs the intake path until an issue has been admitted and its
@@ -186,5 +187,58 @@ func TestMarkerPublisherRetriesAfterAFailedWrite(t *testing.T) {
 	}
 	if stage := publishedMarker(t, comments).Stage; stage != factoryrun.StageClaimed {
 		t.Fatalf("recovered publication wrote stage %q", stage)
+	}
+}
+
+// A verdict recorded against a run reaches the issue the run was asked for,
+// and a second reviewer can tighten it but never loosen it.
+func TestMarkerPublisherPublishesTheStrictestRecordedVerdict(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	store := openManagedTriggerTestStore(t, &clock)
+	server := admitGitHubJob(t, store, &clock)
+	comments := newFakeCommentClient()
+	server.markers = factoryrun.NewUpdater(newGitHubMarkerStore(comments))
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	claimed := publishedMarker(t, comments)
+	if claimed.Verdict != "" || claimed.PR != "" {
+		t.Fatalf("an unreviewed run published a judgement: %#v", claimed)
+	}
+
+	if err := store.RecordReview(t.Context(), RecordedReview{
+		RunID: claimed.RunID, ReviewerRunID: "run_reviewer_one", PullRequest: 7, Verdict: review.VerdictReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reviewed := publishedMarker(t, comments)
+	if reviewed.Verdict != review.VerdictReady || reviewed.PR != "#7" {
+		t.Fatalf("reviewed marker = verdict %q, pr %q", reviewed.Verdict, reviewed.PR)
+	}
+
+	clock = clock.Add(time.Minute)
+	if err := store.RecordReview(t.Context(), RecordedReview{
+		RunID: claimed.RunID, ReviewerRunID: "run_reviewer_two", PullRequest: 7, Verdict: review.VerdictEscalate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	escalated := publishedMarker(t, comments)
+	if escalated.Verdict != review.VerdictEscalate {
+		t.Fatalf("a second reviewer did not tighten the published verdict: %q", escalated.Verdict)
+	}
+	if len(comments.created) != 1 {
+		t.Fatalf("the marker was duplicated rather than updated: %d comments created", len(comments.created))
+	}
+
+	// Nothing has changed since, so nothing is asked of GitHub again.
+	comments.listErr = errors.New("github must not be called again")
+	if err := server.publishFactoryRunMarkers(t.Context()); err != nil {
+		t.Fatalf("republished an unchanged verdict: %v", err)
 	}
 }
