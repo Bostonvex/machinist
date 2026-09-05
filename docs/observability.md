@@ -49,9 +49,13 @@ The collector listens on loopback only. It serves a `/healthz` endpoint and the
 ingest endpoint at `http://127.0.0.1:7900/api/v1/events`, which is the only
 path that accepts events.
 
-Optional shared-infrastructure pollers. Each table may appear once, because two
-providers under one name would share a status row and an operator reading it
-could not tell which of them was failing:
+Optional shared-infrastructure pollers. What has to hold is that every polled
+thing has a name and no two share it: the name keys the provider's status row,
+and two things under one name produce a failure nobody can attribute. So
+`[collector.vllm]`, `[collector.nvidia]` and `[collector.proxy]` appear at most
+once each, while `[[collector.nvidia_remote]]` repeats once per remote node —
+a deployment reaches the number of GPU nodes it reaches, and a node nobody
+polls is indistinguishable from a node that is idle:
 
 ```toml
 [collector.vllm]            # one vLLM server's Prometheus metrics
@@ -61,9 +65,13 @@ endpoint_id = "vllm-primary"
 [collector.nvidia]          # this machine's GPUs
 node_id = "local-nvidia"
 
-[collector.nvidia_remote]   # another node's, over strict-host-verified SSH
-node_id = "dgx-spark"
-ssh_host = "spark"
+[[collector.nvidia_remote]] # another node's, over strict-host-verified SSH
+node_id = "spark-0e9f"
+ssh_host = "spark-0e9f"
+
+[[collector.nvidia_remote]]
+node_id = "spark-27c2"
+ssh_host = "spark-27c2"
 
 # The model proxy. It runs as its own process, in front of one endpoint, and
 # measures every call the harness makes through it. Point the harness's base URL
@@ -75,6 +83,14 @@ model = "ds-0731"
 endpoint_id = "vllm-primary"
 context_token_file = "~/.machinist/collector/proxy-context-token"
 ```
+
+`node_id` is the name, and the config refuses a collision across the local and
+remote tables together. Past one remote node it must be given explicitly rather
+than defaulted, because `remote-nvidia` is a name for *the* remote node and
+stops being one as soon as there are two. Each remote node reports itself as
+`nvidia-smi-remote:<node_id>` in `/healthz`, so an operator reading a failing
+poller can tell which machine stopped answering. See
+[Configuration](configuration.md) for the full reference.
 
 ## Producing events (`[telemetry]`)
 
