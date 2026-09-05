@@ -235,8 +235,12 @@ func OpenStore(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// schemaVersion is the schema this build knows how to read. It must match the
+// PRAGMA user_version at the end of the schema block below; opening a fresh
+// database asserts that, so the two cannot drift apart unnoticed.
+const schemaVersion = 12
+
 func (s *Store) initialize(ctx context.Context) error {
-	const schemaVersion = 11
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
@@ -305,8 +309,9 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 			return fmt.Errorf("upgrade database schema to version 10: %w", err)
 		}
 	}
-	// Version 11 adds review_assignments and nothing else. A new table needs no
-	// upgrade func: the schema block below creates it at every version.
+	// Versions 11 and 12 add review_assignments and fleet_leases and nothing
+	// else. A new table needs no upgrade func: the schema block below creates
+	// it at every version.
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
@@ -352,7 +357,10 @@ CREATE TABLE IF NOT EXISTS review_assignments (
  reviewed_run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, pull_request INTEGER NOT NULL,
  reviewer_job_id TEXT NOT NULL, reviewer_command TEXT NOT NULL, assigned_at TEXT NOT NULL,
  PRIMARY KEY(reviewed_run_id,pull_request));
-PRAGMA user_version=11;`
+CREATE TABLE IF NOT EXISTS fleet_leases (
+ fleet TEXT PRIMARY KEY, state TEXT NOT NULL, expires_at TEXT NOT NULL,
+ reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
+PRAGMA user_version=12;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -1178,12 +1186,12 @@ func (s *Store) AddTriggerCoalesced(ctx context.Context, identity, configGenerat
 }
 
 func (s *Store) Poll(ctx context.Context, request protocol.PollRequest) (*protocol.RunSpec, error) {
-	return s.poll(ctx, request, 0)
+	return s.poll(ctx, request, 0, false)
 }
 
 // poll allows at most maxConcurrentJobs running jobs. Zero leaves concurrency
 // unlimited. Expired leases remain eligible so interrupted work can make progress.
-func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcurrentJobs int) (*protocol.RunSpec, error) {
+func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcurrentJobs int, requireFleetLease bool) (*protocol.RunSpec, error) {
 	if maxConcurrentJobs < 0 {
 		return nil, errors.New("max concurrent jobs cannot be negative")
 	}
@@ -1253,6 +1261,27 @@ func (s *Store) poll(ctx context.Context, request protocol.PollRequest, maxConcu
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	// The lease gate sits here on purpose: below the upsert, so a stood-down
+	// fleet still shows as alive rather than as a host that has disappeared;
+	// below the active-run branch, so a run already in flight is still handed
+	// back to be finished and reported; and inside the transaction, so a lease
+	// revoked between the read and the dispatch cannot let one more run
+	// through.
+	if requireFleetLease {
+		if err := checkFleetLease(ctx, tx, request.Fleet, nowTime); err != nil {
+			var refused *ErrFleetRefused
+			if errors.As(err, &refused) {
+				// The worker record above is kept: an operator standing a fleet
+				// down needs to keep seeing it, and a refusal that also made the
+				// host vanish from the roster would hide its own effect.
+				if commitErr := tx.Commit(); commitErr != nil {
+					return nil, commitErr
+				}
+			}
+			return nil, err
+		}
+	}
+
 	atCapacity := false
 	if maxConcurrentJobs > 0 {
 		var runningJobs int

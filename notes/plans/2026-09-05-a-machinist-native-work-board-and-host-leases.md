@@ -3,7 +3,7 @@ kind: plan
 title: A Machinist-native work board and host leases
 date: 2026-09-05
 subject: Bostonvex/machinist#7
-status: draft
+status: active
 ---
 
 ## What this is for
