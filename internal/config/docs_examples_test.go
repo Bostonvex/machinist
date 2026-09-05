@@ -67,7 +67,12 @@ func TestEveryDocumentedConfigurationExampleLoads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		for index, match := range tomlBlock.FindAllStringSubmatch(string(source), -1) {
+		// Line endings are the checkout's, not the document's. On Windows git
+		// hands these files back with CRLF, and a fence pattern anchored to \n
+		// then matches nothing -- which is the one way this check can pass by
+		// reading no examples at all.
+		text := strings.ReplaceAll(string(source), "\r\n", "\n")
+		for index, match := range tomlBlock.FindAllStringSubmatch(text, -1) {
 			for _, fragment := range splitByFile(match[1]) {
 				examples++
 				owner, err := ownerOf(fragment)
