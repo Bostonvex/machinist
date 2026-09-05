@@ -89,10 +89,36 @@ knowing before reading a marker:
   on records finished work as already described, so switching it on does not
   comment on every issue the control plane has ever worked. Work still in
   flight is left undescribed on purpose, and gets its marker on the next pass.
-- **The published marker carries identity and stage only.** Branch, pull
-  request, checks, and verdict are not part of a run's recorded state, so the
-  control plane cannot report them and does not guess. An agent that knows them
-  may write them; the schema is the same either way.
+- **The published marker carries identity, stage, and what was decided.** The
+  verdict and the pull request it was given on appear once a review has been
+  recorded against the run through
+  [the review route](#where-the-verdict-comes-from). Branch and checks are not
+  part of a run's recorded state, so the control plane does not report them and
+  does not guess. An agent that knows them may write them; the schema is the
+  same either way.
+- **More than one review resolves to the strictest.** A run judged twice
+  publishes the stricter of the two verdicts, so a later reviewer can add a
+  constraint but never lift one another reviewer applied.
+
+### Where the verdict comes from
+
+A reviewer submits its output block to the control plane against the run it
+judged. The route decides the verdict; the reviewer does not.
+
+- **Independence is decided from recorded state.** The submission carries no
+  claim about who either party is. The control plane reads both identities from
+  the runs themselves -- the role each held and the profile that actually ran --
+  so an agent cannot review its own work by describing itself differently, and a
+  run cannot review itself.
+- **The reviewer names the change; GitHub says what it touched.** The changed
+  paths come from the pull request's own diff, so protected-path policy applies
+  to what the change really contains rather than to what the review says it
+  contains.
+- **A refused review is not a failed review.** A submission that is not
+  independent, or that does not parse, records nothing at all: the run keeps no
+  verdict rather than gaining a negative one.
+- **The route decides and records. It does not act.** No merge, no deploy, no
+  label.
 
 ### The parts that fail closed
 

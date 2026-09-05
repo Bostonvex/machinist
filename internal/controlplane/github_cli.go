@@ -405,6 +405,69 @@ func parseGitHubIssueComments(output []byte) ([]GitHubIssueComment, error) {
 	return comments, nil
 }
 
+// githubPullRequestFile is one entry of a pull request's file listing.
+type githubPullRequestFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+}
+
+// ListPullRequestFiles returns every repository path a pull request touches.
+//
+// The paths come from GitHub's own diff rather than from whoever is asking, so
+// a review cannot decide for itself which files it changed. A rename reports
+// both names: moving a file out of a protected path is still a change to that
+// path.
+func (g *GitHubCLI) ListPullRequestFiles(ctx context.Context, repository string, number int) ([]string, error) {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	if number <= 0 {
+		return nil, errors.New("github pull request number must be positive")
+	}
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d/files?per_page=100", repository, number)
+	stdout, err := g.run(ctx, "read pull request files", []string{
+		"api", "--method", "GET", "--paginate", "--slurp",
+		"-H", "Accept: application/vnd.github+json", endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	paths, err := parseGitHubPullRequestFiles(stdout)
+	if err != nil {
+		return nil, malformedGitHubOutput("read pull request files", err, stdout)
+	}
+	return paths, nil
+}
+
+// parseGitHubPullRequestFiles reads either a paginated (--slurp) or a
+// single-page file listing. A file entry without a name is an error: an
+// unreadable path cannot be shown to be outside the protected set, and dropping
+// it would turn a protected change into an unremarkable one.
+func parseGitHubPullRequestFiles(output []byte) ([]string, error) {
+	var pages [][]githubPullRequestFile
+	if err := decodeSingleJSON(output, &pages); err != nil {
+		var flat []githubPullRequestFile
+		if flatErr := decodeSingleJSON(output, &flat); flatErr != nil {
+			return nil, err
+		}
+		pages = [][]githubPullRequestFile{flat}
+	}
+	var paths []string
+	for _, page := range pages {
+		for _, file := range page {
+			if strings.TrimSpace(file.Filename) == "" {
+				return nil, fmt.Errorf("pull request file has no name")
+			}
+			paths = append(paths, file.Filename)
+			if previous := strings.TrimSpace(file.PreviousFilename); previous != "" {
+				paths = append(paths, previous)
+			}
+		}
+	}
+	return paths, nil
+}
+
 // GitHubIssueIsEligible applies local intake guards before admission.
 func GitHubIssueIsEligible(issue GitHubIssueDetails, configuredRepositories []string) bool {
 	if !strings.EqualFold(issue.State, "open") || issue.IsPullRequest || issue.RequestedEvent == nil {

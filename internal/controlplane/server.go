@@ -22,6 +22,7 @@ import (
 	"github.com/owainlewis/machinist/internal/config"
 	"github.com/owainlewis/machinist/internal/factoryrun"
 	"github.com/owainlewis/machinist/internal/protocol"
+	"github.com/owainlewis/machinist/internal/review"
 )
 
 // The runner records up to 64 MiB before base64 encoding. The JSON envelope remains
@@ -65,6 +66,8 @@ type Server struct {
 	triggers           []config.ResolvedTrigger
 	github             githubTriggerClient
 	markers            *factoryrun.Updater
+	pullRequests       pullRequestFileLister
+	reviews            review.Engine
 	schedulerEvery     time.Duration
 	now                func() time.Time
 	schedulerError     func(error)
@@ -207,7 +210,8 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 	githubCLI := NewGitHubCLI("gh", 30*time.Second)
 	server := &Server{
 		store: store, definitionPath: definitionPath, triggers: managedTriggers,
-		github: githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)), now: time.Now,
+		github: githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)),
+		pullRequests: githubCLI, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },
 		maxConcurrentJobs: maxConcurrentJobs, workerToken: workerToken, csrfToken: csrfToken,
@@ -367,6 +371,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
 	mux.HandleFunc("POST /api/v1/runs/{id}/terminal", s.authorizeWorker(s.bindTerminal))
 	mux.HandleFunc("POST /api/v1/runs/{id}/complete", s.authorizeWorker(s.complete))
+	mux.HandleFunc("POST /api/v1/runs/{id}/review", s.authorizeWorker(s.submitReview))
 	mux.Handle("/", http.FileServer(http.FS(dist)))
 	return securityHeaders(mux), nil
 }

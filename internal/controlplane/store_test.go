@@ -116,7 +116,7 @@ func TestOpenStoreReplacesLegacySchema(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || version != 9 {
+	if count != 0 || version != 10 {
 		t.Fatalf("migrated database count=%d version=%d", count, version)
 	}
 }
@@ -127,7 +127,7 @@ func TestOpenStoreRejectsNewerSchemaWithoutDeletingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=10;`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved'); PRAGMA user_version=11;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -177,7 +177,7 @@ PRAGMA user_version=2;`); err != nil {
 	if err := store.db.QueryRow(`SELECT environment_json,profiles_json FROM workers WHERE instance_id='legacy'`).Scan(&environmentJSON, &profilesJSON); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || environmentJSON != "{}" || profilesJSON != "{}" {
+	if version != 10 || environmentJSON != "{}" || profilesJSON != "{}" {
 		t.Fatalf("version=%d environment=%q profiles=%q", version, environmentJSON, profilesJSON)
 	}
 }
@@ -227,7 +227,7 @@ func TestOpenStoreUpgradesVersionFourWithoutLosingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
+	if version != 10 || cancellationColumns != 1 || cancelRequested != 0 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].ID != jobID {
 		t.Fatalf("version=%d columns=%d cancel=%d jobs=%#v", version, cancellationColumns, cancelRequested, snapshot.Jobs)
 	}
 }
@@ -264,7 +264,7 @@ func TestOpenStoreUpgradesVersionFiveLegacyAttemptBudget(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_attempts FROM runs WHERE job_id=?`, jobID).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || maxAttempts != defaultLegacyMaxAttempts {
+	if version != 10 || maxAttempts != defaultLegacyMaxAttempts {
 		t.Fatalf("version=%d max_attempts=%d", version, maxAttempts)
 	}
 }
@@ -311,7 +311,7 @@ func TestOpenStoreUpgradesVersionSixTokenBudgetWithoutLosingJobs(t *testing.T) {
 	if err := upgraded.db.QueryRow(`SELECT max_total_tokens FROM runs WHERE job_id=?`, jobID).Scan(&maxTotalTokens); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || budgetColumns != 1 || maxTotalTokens != 0 {
+	if version != 10 || budgetColumns != 1 || maxTotalTokens != 0 {
 		t.Fatalf("version=%d columns=%d max_total_tokens=%d", version, budgetColumns, maxTotalTokens)
 	}
 }
@@ -1743,8 +1743,8 @@ func testVersionOneUpgrade(t *testing.T, partial string) {
 	}
 	defer store.Close()
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
-		t.Fatalf("schema version = %d, %v, want 9", version, err)
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+		t.Fatalf("schema version = %d, %v, want 10", version, err)
 	}
 	var columns int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('has_shepherd','schedule_name')`).Scan(&columns); err != nil || columns != 0 {
