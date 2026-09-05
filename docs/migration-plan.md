@@ -168,8 +168,12 @@ gates:
 
 ## 7. Ownership note
 
-- **Foreman** plans/builds/reviews/opens PRs and stops at ready-for-review.
-  It does **not** merge or deploy.
+- **Foreman** plans/builds/reviews and opens PRs **as drafts**. It stops there:
+  its own review is not independent, because it wrote the change. The control
+  plane takes a change out of draft when an independent reviewer's verdict is
+  recorded as `ready-for-human-review`
+  ([draft-until-reviewed.md](draft-until-reviewed.md)). The Foreman does **not**
+  promote, merge, or deploy.
 - **Gatekeeper** (now native in Machinist, Phase B) performs merge/deploy on a
   named go-ahead or under the Automation/Deploy tier.
 - Machinist becomes the single owner of the consolidated capability set;
