@@ -385,6 +385,7 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.authorizeSubmission(s.cancelJob))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("GET /api/v1/leases", s.readLeases)
+	mux.HandleFunc("GET /api/v1/board", s.board)
 	mux.HandleFunc("POST /api/v1/leases", s.authorizeSubmission(s.writeLease))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
@@ -766,6 +767,20 @@ type leaseView struct {
 	Lease
 	Allowed  bool `json:"allowed"`
 	Required bool `json:"required"`
+}
+
+// board serves the lane view of everything this control plane is tracking. It
+// is a read of state the control plane already owns, so it needs no
+// authorization beyond reaching the port, exactly like the status view.
+func (s *Server) board(response http.ResponseWriter, request *http.Request) {
+	view, err := s.store.Board(request.Context())
+	if err != nil {
+		// The board is never served half-read. An empty board is a statement
+		// that there is no work, and this is not that.
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, view)
 }
 
 func (s *Server) readLeases(response http.ResponseWriter, request *http.Request) {
