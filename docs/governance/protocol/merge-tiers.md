@@ -7,12 +7,17 @@ document describes two **opt-in** tiers a repository owner may adopt so that an
 agent holding a dedicated merge seat (the `gatekeeper` role) may merge without
 the owner naming each pull request.
 
-**These tiers are documented, not enforced.** Every condition below must be
-verified at merge time against the exact commit that will land. A tier that
-appears to be enforced but is not is worse than one that is only documented.
-Native enforcement arrives with `internal/gatekeeper` in
-[migration-plan Phase B](../../migration-plan.md); until then, treat every
-condition as a manual check.
+**These tiers are enforced by [`internal/gatekeeper`](../../../internal/gatekeeper).**
+Every condition below is verified at merge time against the exact commit that
+will land. `gatekeeper.Authorize` decides; it does not merge — a caller performs
+the merge only on an allowed `Decision`, which keeps the credential that can
+merge out of the code that reasons about whether merging is allowed.
+
+The package fails closed at every step. Its zero `Enablement` turns on no tier,
+its zero `Decision` authorizes nothing, and a fact it could not read is never
+read as a permissive one: an unread file mode is not a plain file, an unlabelled
+issue is not low risk, an unread protected-path list is not an empty one, and a
+repository that requires no status check does not thereby pass its checks.
 
 **Deploy is never excepted.** Every deploy still needs the owner to name the
 target and the procedure, regardless of tier.
@@ -27,7 +32,8 @@ merge.
    under `docs/`, and is mode `100644` in the merge commit's tree. Symlinks
    (`120000`) and executables (`100755`) are not Green whatever they are named.
    Read file modes from the git tree — the pull request files API does not expose
-   them.
+   them, and `gatekeeper.FileMode` refuses a mode that was never read rather than
+   assuming a plain file.
 2. **No governance or live agent-instruction sources.** No path is under
    `docs/governance/**` or is `AGENTS.md`. Those are what the roles execute
    from: a change to them is a change to the contract, and it is on the
@@ -67,8 +73,11 @@ owner explicitly lists.**
 Repositories: <none — this tier permits nothing until a repository is named>
 ```
 
-Adding a repository is an owner decision. Until a repository is named, this tier
-permits nothing anywhere.
+Adding a repository is an owner decision, made in
+`gatekeeper.Enablement.ReviewedRepositories`. There is deliberately no boolean
+for this tier: it is meaningless without a repository list, and a boolean would
+let it be switched on everywhere by a single `true`. Until a repository is
+named, this tier permits nothing anywhere.
 
 A pull request may merge under Reviewed only if **all six** hold — condition 6 is
 a gate, not a note. Verify each against the commit that will merge.
@@ -99,7 +108,10 @@ a gate, not a note. Verify each against the commit that will merge.
    prompts, or the configuration that binds a role to a runtime.
 
 **Deploy is unchanged.** A merge under Reviewed authorizes nothing beyond the
-merge.
+merge. `gatekeeper.AuthorizeDeploy` is a separate function that no tier reaches:
+it accepts only an owner-named target and procedure, and only a deploy that
+publishes a release artifact tag. A bad merge is visible in a diff and revertible
+with another merge; a deploy changes what is running.
 
 ### Conditions 7 and 8 — mechanics, not gates
 

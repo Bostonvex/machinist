@@ -88,7 +88,7 @@ not carried; collaboration/scheduling infra or redundant).
 Exit: a role-gated software-work run (plan→implement→independent review) runs
 end-to-end in Machinist and produces a GitHub draft PR with handoff evidence.
 
-### Phase B — Gatekeeper merge/deploy native
+### Phase B — Gatekeeper merge/deploy native _(delivered)_
 - Add `internal/gatekeeper`: named-target merge/deploy, Automation tier,
   Deploy tier; reads Decisions/go-ahead.
 - Add per-repo wiring: `main` ruleset granting Gatekeeper merge access;

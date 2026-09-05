@@ -26,6 +26,17 @@ The orchestrator (or the owner) names a pull request and asks you to merge. Conf
 
 Then squash-merge as the machine account. Record what you checked.
 
+## Enforcement
+
+These conditions are enforced by [`internal/gatekeeper`](../../../internal/gatekeeper),
+not carried by this document alone. `gatekeeper.Authorize` takes the facts read
+from the forge and the git tree and returns a `Decision`; merge only on one that
+is `Allowed`, and write its `Reasons` back to the pull request — several
+conditions, independence above all, cannot be reconstructed from the forge
+afterwards.
+
+Deploy goes through `gatekeeper.AuthorizeDeploy`, which no tier reaches.
+
 ## Output
 
 ```text
