@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,14 +31,10 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 	directory := filepath.Join(home, ".machinist")
-	wantFiles := []string{
-		"config.toml",
-		"prompts/audit.md",
-		"prompts/foreman.md",
-		"prompts/shepherd.md",
-		"server/worker.token",
-		"worker.toml",
-	}
+	// Derived from what init ships rather than restated, so a prompt added to
+	// initialFiles and to nothing else cannot pass here by being invisible.
+	wantFiles := append(append([]string{}, initialFiles...), "server/worker.token")
+	sort.Strings(wantFiles)
 	if got := regularFiles(t, directory); strings.Join(got, "\n") != strings.Join(wantFiles, "\n") {
 		t.Fatalf("installed files = %#v, want %#v", got, wantFiles)
 	}
@@ -88,10 +85,15 @@ func TestInitInstallsCompleteEditableDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Commands) != 3 {
-		t.Fatalf("installed definitions = commands %#v", definitions.Commands)
+	if len(definitions.Commands) == 0 {
+		t.Fatal("installed config defines no commands")
 	}
-	for _, name := range []string{"foreman", "audit", "shepherd"} {
+	// Every command the installed config defines has to load, and loading one
+	// reads the prompt file it names. The set comes from the installed config
+	// rather than a list here, so a command added to examples/config.toml whose
+	// prompt was never added to initialFiles fails here instead of the first
+	// time an operator runs it.
+	for name := range definitions.Commands {
 		if _, err := config.LoadCommand(definition, name); err != nil {
 			t.Fatalf("load installed agent %s: %v", name, err)
 		}
@@ -189,8 +191,24 @@ func TestInitKeepsExistingFilesAndRestoresMissingDefaults(t *testing.T) {
 	if !bytes.Equal(audit, wantAudit) {
 		t.Fatal("init failed to restore the missing audit default")
 	}
-	if !strings.Contains(stdout.String(), "kept prompts/foreman.md") || !strings.Contains(stdout.String(), "created prompts/audit.md") || !strings.Contains(stdout.String(), "kept server/worker.token") {
-		t.Fatalf("stdout = %q", stdout.String())
+	for _, line := range []string{
+		// The edited prompt is kept -- an operator's edits are theirs -- and
+		// the difference is named. Keeping it silently is how the copy
+		// Machinist runs stopped being the copy Machinist tests, with nothing
+		// anywhere saying so.
+		"kept prompts/foreman.md (differs from the shipped copy)\n",
+		"created prompts/audit.md\n",
+		// Untouched is not drift, and reporting it as drift would make the
+		// notice mean nothing.
+		"kept prompts/shepherd.md\n",
+		// The token has no shipped copy to have drifted from: the body offered
+		// for comparison was generated during this run, so every existing
+		// token differs from it.
+		"kept server/worker.token\n",
+	} {
+		if !strings.Contains(stdout.String(), line) {
+			t.Fatalf("stdout = %q, want a line %q", stdout.String(), line)
+		}
 	}
 }
 

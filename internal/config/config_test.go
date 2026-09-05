@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -773,20 +774,24 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions.Commands) != 3 {
-		t.Fatalf("example commands = %#v, want foreman, audit, and shepherd", definitions.Commands)
+	exampleCommands := []string{"foreman", "audit", "shepherd", "delegate-plan", "delegate-build", "delegate-review"}
+	if len(definitions.Commands) != len(exampleCommands) {
+		t.Fatalf("example commands = %#v, want %v", definitions.Commands, exampleCommands)
 	}
-	if _, ok := definitions.Commands["foreman"]; !ok {
-		t.Fatal("example foreman agent is missing")
+	for _, name := range exampleCommands {
+		if _, ok := definitions.Commands[name]; !ok {
+			t.Fatalf("example %s command is missing", name)
+		}
 	}
-	if _, ok := definitions.Commands["audit"]; !ok {
-		t.Fatal("example audit agent is missing")
-	}
-	if _, ok := definitions.Commands["shepherd"]; !ok {
-		t.Fatal("example shepherd agent is missing")
+	// The review route reads this role to decide whether a verdict is
+	// independent of the run it judges. A delegate-review run under any other
+	// role produces reviews the control plane refuses, which reads as nobody
+	// having reviewed the change.
+	if role := definitions.Commands["delegate-review"].Role; role != "reviewer" {
+		t.Fatalf("example delegate-review role = %q, want %q", role, "reviewer")
 	}
 
-	for _, name := range []string{"foreman", "audit", "shepherd"} {
+	for _, name := range exampleCommands {
 		t.Run(name, func(t *testing.T) {
 			agent, err := LoadCommand(definition, name)
 			if err != nil {
@@ -829,7 +834,7 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		"Never overwrite",
 		"Create a missing local",
 		"clean worktree and equality between the local branch head",
-		"Every subagent prompt must require a concise Markdown handoff",
+		"Every delegate prompt must require a concise Markdown handoff",
 		"## Planning handoff",
 		"## Build handoff",
 		"## Review handoff",
@@ -839,6 +844,17 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		"return a valid handoff, whether it exits or remains active",
 		"read-only reviewer",
 		"Never inline the diff",
+		// The Foreman delegates and never does the work itself. What "fresh"
+		// asks for is a separate context, not one particular harness feature,
+		// so the prompt names both mechanisms and blocks only when neither is
+		// there. Before this, a harness with no native subagents blocked on
+		// every issue while a working second mechanism sat unused.
+		"Coordinate fresh coding delegates",
+		"Use a fresh delegate for planning, building, each repair, and every review",
+		"A fresh native subagent, if this harness has them",
+		"Otherwise a fresh Machinist run",
+		"Only if neither mechanism is available",
+		"not having looked for the second\nmechanism is not",
 		// The implementer opens a draft and never lifts it: its own review is
 		// not independent, because it wrote the change. See
 		// docs/draft-until-reviewed.md.
@@ -888,6 +904,10 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		// The one-mechanism wording, which blocked a harness that had a
+		// perfectly good second way to delegate.
+		"Coordinate native coding subagents",
+		"If native subagents are unavailable",
 		"open one non-draft pull request",
 		"open non-draft state",
 		"mark the pull request ready for human review",
@@ -924,9 +944,24 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	// a round number with room in it, so that any growth has to be argued for
 	// here. Raise it only for a rule that has to be in the prompt, and re-pin it
 	// tight afterwards: a ceiling that is moved whenever it is reached is not a
-	// ceiling. Last raised for the draft rule above (docs/draft-until-reviewed.md).
-	if words := len(strings.Fields(foreman.Prompt)); words > 2250 {
-		t.Fatalf("foreman prompt has %d words, want no more than 2250", words)
+	// ceiling. Last raised for the second delegation mechanism above
+	// (docs/prompt-parity.md).
+	if words := len(strings.Fields(foreman.Prompt)); words > 2380 {
+		t.Fatalf("foreman prompt has %d words, want no more than 2380", words)
+	}
+	// Every command the Foreman tells itself to run has to be a command this
+	// file defines. The set is read out of the prompt rather than restated
+	// here, so a mechanism added to the prompt and to nothing else fails here
+	// instead of at three in the morning inside a run that has already claimed
+	// an issue.
+	named := regexp.MustCompile(`machinist run --command ([a-z0-9-]+)`).FindAllStringSubmatch(foreman.Prompt, -1)
+	if len(named) == 0 {
+		t.Fatal("foreman prompt names no machinist run command: the second delegation mechanism is gone")
+	}
+	for _, match := range named {
+		if _, ok := definitions.Commands[match[1]]; !ok {
+			t.Fatalf("foreman prompt runs --command %q, which examples/config.toml does not define", match[1])
+		}
 	}
 
 	audit, err := LoadCommand(definition, "audit")
