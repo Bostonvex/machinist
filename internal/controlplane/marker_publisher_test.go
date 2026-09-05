@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -31,7 +32,11 @@ func admitGitHubJob(t *testing.T, store *Store, clock *time.Time) *Server {
 	}
 	server := &Server{
 		store: store, triggers: []config.ResolvedTrigger{trigger}, github: triggerClient,
-		now: func() time.Time { return *clock },
+		// The real server loads this from the same [github.repositories] table
+		// the trigger resolved, so the fixture reads it back off the trigger
+		// rather than restating the mapping a second time.
+		githubRepositories: maps.Clone(trigger.GitHubRepositories),
+		now:                func() time.Time { return *clock },
 	}
 	if err := processManagedTriggers(t.Context(), server); err != nil {
 		t.Fatal(err)

@@ -64,6 +64,7 @@ type Server struct {
 	store              *Store
 	definitionPath     string
 	triggers           []config.ResolvedTrigger
+	githubRepositories map[string]string
 	github             githubTriggerClient
 	markers            *factoryrun.Updater
 	pullRequests       gitHubPullRequests
@@ -207,10 +208,15 @@ func NewServerWithOptions(store *Store, definitionPath, workerToken string, maxC
 	if err := store.SyncTriggers(context.Background(), definitions); err != nil {
 		return nil, fmt.Errorf("restore managed triggers: %w", err)
 	}
+	githubRepositories, err := config.LoadGitHubRepositories(definitionPath)
+	if err != nil {
+		return nil, err
+	}
 	githubCLI := NewGitHubCLI("gh", 30*time.Second)
 	server := &Server{
 		store: store, definitionPath: definitionPath, triggers: managedTriggers,
-		github: githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)),
+		githubRepositories: githubRepositories,
+		github:             githubCLI, markers: factoryrun.NewUpdater(newGitHubMarkerStore(githubCLI)),
 		pullRequests: githubCLI, now: time.Now,
 		schedulerEvery: 30 * time.Second, shutdownTimeout: 5 * time.Second,
 		schedulerError:    func(err error) { log.Printf("scheduler: %v", err) },

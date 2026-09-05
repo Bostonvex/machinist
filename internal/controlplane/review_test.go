@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +15,21 @@ import (
 	"github.com/owainlewis/machinist/internal/protocol"
 	"github.com/owainlewis/machinist/internal/review"
 )
+
+// authorSlug is what the fixture's repositories are configured to be called on
+// the forge. It differs from the logical name on purpose: a test that used the
+// same string for both could not tell a resolved slug from an unresolved one.
+const authorSlug = "Bostonvex/machinist"
+
+// reviewerSlug keeps two logical repositories on two distinct slugs, so a
+// fixture whose runs sit in different repositories does not quietly map them
+// onto one.
+func reviewerSlug(authorRepository, reviewerRepository string) string {
+	if reviewerRepository == authorRepository {
+		return authorSlug
+	}
+	return "Bostonvex/" + reviewerRepository
+}
 
 // readyReview is a reviewer output block that asks for nothing. Tests that care
 // about what the route adds start from a review that adds nothing itself.
@@ -101,7 +117,13 @@ func newReviewFixtureIn(t *testing.T, authorRepository, reviewerRepository strin
 	if fixture.author.ID == "" || fixture.reviewer.ID == "" {
 		t.Fatalf("fixture leased author %q and reviewer %q", fixture.author.ID, fixture.reviewer.ID)
 	}
-	fixture.server = &Server{store: store, pullRequests: fixture.files, now: time.Now}
+	fixture.server = &Server{
+		store: store, pullRequests: fixture.files, now: time.Now,
+		githubRepositories: map[string]string{
+			authorRepository:   authorSlug,
+			reviewerRepository: reviewerSlug(authorRepository, reviewerRepository),
+		},
+	}
 	return fixture
 }
 
@@ -183,7 +205,8 @@ func TestReviewRouteRecordsAnIndependentVerdict(t *testing.T) {
 	if count != 1 || verdict != string(review.VerdictReady) {
 		t.Fatalf("recorded %d review(s) with verdict %q", count, verdict)
 	}
-	if fixture.files.repository != "machinist" || fixture.files.number != 41 {
+	// The forge is asked for the slug, not for the logical name the run stores.
+	if fixture.files.repository != authorSlug || fixture.files.number != 41 {
 		t.Fatalf("read files of %s#%d", fixture.files.repository, fixture.files.number)
 	}
 }
@@ -336,5 +359,61 @@ func TestReviewRouteIsMountedForAuthorizedWorkers(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated review = %d, want the route to exist and refuse it", response.StatusCode)
+	}
+}
+
+// A run records the repository name its worker registered a checkout under.
+// GitHub has never heard of that name, so the route has to translate it before
+// it asks for a diff; asking for "machinist" gets a 404 that reads like the
+// pull request is missing when the mapping is what is missing.
+func TestReviewRouteAsksTheForgeForTheConfiguredSlug(t *testing.T) {
+	fixture := newReviewFixture(t, "internal/controlplane/review.go")
+	response := fixture.submit(t, fixture.author.ID, protocol.ReviewSubmission{
+		ReviewerRun: fixture.reviewer.ID, PullRequest: 41, Output: readyReview,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("submit = %d %s", response.Code, response.Body.String())
+	}
+	if fixture.files.repository != authorSlug {
+		t.Fatalf("the forge was asked about %q, not the configured slug", fixture.files.repository)
+	}
+}
+
+// A repository nobody mapped is refused and named. Falling through to the
+// logical name would restore the unreadable 404, and a review the control plane
+// cannot tie to a real change is not one it can record.
+func TestReviewRouteRefusesAnUnmappedRepository(t *testing.T) {
+	fixture := newReviewFixture(t, "internal/controlplane/review.go")
+	fixture.server.githubRepositories = map[string]string{"something-else": "Bostonvex/something-else"}
+	response := fixture.submit(t, fixture.author.ID, protocol.ReviewSubmission{
+		ReviewerRun: fixture.reviewer.ID, PullRequest: 41, Output: readyReview,
+	})
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("submit = %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "machinist") {
+		t.Fatalf("the refusal does not name the repository: %s", response.Body.String())
+	}
+	if fixture.files.calls != 0 {
+		t.Fatalf("the forge was asked %d time(s) about a repository with no slug", fixture.files.calls)
+	}
+	// A refusal is not a verdict: nothing is recorded either way.
+	if _, count := fixture.recordedVerdict(t, fixture.author.ID); count != 0 {
+		t.Fatalf("recorded %d review(s) for a submission that was refused", count)
+	}
+}
+
+func TestGitHubRepositoryForRefusesWhatItCannotResolve(t *testing.T) {
+	server := &Server{githubRepositories: map[string]string{"machinist": authorSlug}}
+	slug, err := server.gitHubRepositoryFor("machinist")
+	if err != nil || slug != authorSlug {
+		t.Fatalf("resolved %q, %v", slug, err)
+	}
+	// The lookup is exact. A logical name is configuration, not a slug with a
+	// missing owner, so neither the slug nor a prefix of it resolves.
+	for _, unmapped := range []string{"", "Machinist", authorSlug, "machinist2"} {
+		if _, err := server.gitHubRepositoryFor(unmapped); !errors.Is(err, ErrRepositoryUnmapped) {
+			t.Fatalf("gitHubRepositoryFor(%q) = %v", unmapped, err)
+		}
 	}
 }

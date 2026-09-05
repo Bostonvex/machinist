@@ -322,3 +322,47 @@ prompt="audit"
 		t.Fatal("signature did not change with schedule")
 	}
 }
+
+// The mapping is needed wherever a run has to be named to the forge, which
+// includes deployments that fire no GitHub trigger at all. Reading it off a
+// trigger would make the lookup depend on a trigger existing.
+func TestLoadGitHubRepositoriesWithoutAnyTrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, `[github.repositories]
+machinist = "Bostonvex/machinist"
+factory = "Bostonvex/agent-software-factory"
+`)
+	repositories, err := LoadGitHubRepositories(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 2 || repositories["machinist"] != "Bostonvex/machinist" || repositories["factory"] != "Bostonvex/agent-software-factory" {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+}
+
+// A configuration with no mapping at all resolves to an empty map, not an
+// error: a deployment that never reviews GitHub work is allowed to exist. What
+// it must not do is resolve a name it was never given, and that is the caller's
+// refusal to make.
+func TestLoadGitHubRepositoriesIsEmptyWhenUnconfigured(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeTestFile(t, path, "[server]\nmax_concurrent_jobs = 1\n")
+	repositories, err := LoadGitHubRepositories(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 0 {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+}
+
+func TestLoadGitHubRepositoriesRefusesAnUnsafeSlug(t *testing.T) {
+	for _, slug := range []string{"machinist", "../../etc", "Bostonvex/../machinist", " Bostonvex/machinist"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeTestFile(t, path, "[github.repositories]\nmachinist = \""+slug+"\"\n")
+		if _, err := LoadGitHubRepositories(path); err == nil {
+			t.Fatalf("slug %q was accepted", slug)
+		}
+	}
+}
