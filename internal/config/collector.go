@@ -40,6 +40,7 @@ type Collector struct {
 	IdentitySaltFile string           `toml:"identity_salt_file"`
 	Retention        string           `toml:"retention"`
 	ProviderInterval string           `toml:"provider_interval"`
+	Proxy            *CollectorProxy  `toml:"proxy"`
 	Vllm             *CollectorVllm   `toml:"vllm"`
 	Nvidia           *CollectorNvidia `toml:"nvidia"`
 	NvidiaRemote     *CollectorNvidia `toml:"nvidia_remote"`
@@ -47,6 +48,17 @@ type Collector struct {
 	retention        time.Duration
 	providerInterval time.Duration
 	configDir        string
+}
+
+// CollectorProxy is the timing proxy that a harness points its model base URL
+// at. It runs as its own process rather than inside the collector: it sits in
+// the model call path, so it has to stay up when the collector does not.
+type CollectorProxy struct {
+	Listen           string `toml:"listen"`
+	Upstream         string `toml:"upstream"`
+	Model            string `toml:"model"`
+	EndpointID       string `toml:"endpoint_id"`
+	ContextTokenFile string `toml:"context_token_file"`
 }
 
 // CollectorVllm polls one vLLM server's Prometheus endpoint.
@@ -124,6 +136,13 @@ func applyCollectorDefaults(collector Collector) (Collector, error) {
 	if collector.providerInterval, err = collectorDuration("provider_interval", collector.ProviderInterval, 10*time.Second, minimumProviderInterval, maximumProviderInterval); err != nil {
 		return Collector{}, err
 	}
+	if collector.Proxy != nil {
+		proxy, err := applyCollectorProxyDefaults(*collector.Proxy, collector.configDir)
+		if err != nil {
+			return Collector{}, err
+		}
+		collector.Proxy = &proxy
+	}
 	if collector.Vllm != nil && strings.TrimSpace(collector.Vllm.EndpointID) == "" {
 		collector.Vllm.EndpointID = "vllm-primary"
 	}
@@ -142,6 +161,42 @@ func applyCollectorDefaults(collector Collector) (Collector, error) {
 		return Collector{}, errors.New("collector.nvidia polls this machine: name another host under [collector.nvidia_remote]")
 	}
 	return collector, nil
+}
+
+// applyCollectorProxyDefaults fills in and checks the model proxy's table.
+//
+// Only the shape is checked here — the listen address, and that the required
+// fields were written. What the upstream and the identifiers may be is the
+// proxy package's own rule, applied when the proxy starts, so that the two
+// cannot disagree about what a valid upstream is.
+func applyCollectorProxyDefaults(proxy CollectorProxy, configDir string) (CollectorProxy, error) {
+	if strings.TrimSpace(proxy.Listen) == "" {
+		proxy.Listen = "127.0.0.1:7901"
+	}
+	if err := validateLoopbackOrigin(proxy.Listen); err != nil {
+		return CollectorProxy{}, fmt.Errorf("collector.proxy.listen: %w", err)
+	}
+	for field, value := range map[string]*string{
+		"upstream": &proxy.Upstream, "model": &proxy.Model, "endpoint_id": &proxy.EndpointID,
+	} {
+		if strings.TrimSpace(*value) == "" {
+			return CollectorProxy{}, fmt.Errorf("collector.proxy.%s is required", field)
+		}
+		*value = strings.TrimSpace(*value)
+	}
+	// The path is required for the same reason the collector's own secrets
+	// are: a credential this process would place somewhere of its own choosing
+	// is one nobody knows exists, and the harness that must present it is
+	// configured somewhere else entirely.
+	if strings.TrimSpace(proxy.ContextTokenFile) == "" {
+		return CollectorProxy{}, errors.New("collector.proxy.context_token_file is required")
+	}
+	path, err := resolveConfigPath(proxy.ContextTokenFile, configDir)
+	if err != nil {
+		return CollectorProxy{}, fmt.Errorf("resolve collector.proxy.context_token_file: %w", err)
+	}
+	proxy.ContextTokenFile = path
+	return proxy, nil
 }
 
 func collectorDuration(field, input string, fallback, minimum, maximum time.Duration) (time.Duration, error) {

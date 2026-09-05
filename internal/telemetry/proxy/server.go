@@ -405,7 +405,7 @@ func (s *Server) emit(eventType string, measured *call, at time.Time, attributes
 }
 
 // Serve listens and forwards until the context is done.
-func (s *Server) Serve(ctx context.Context) error {
+func (s *Server) Serve(ctx context.Context, onListening func(net.Addr)) error {
 	listener, err := net.Listen("tcp", s.settings.listen)
 	if err != nil {
 		return fmt.Errorf("the model proxy could not listen on %s: %w", s.settings.listen, err)
@@ -413,6 +413,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.mutex.Lock()
 	s.listener = listener
 	s.mutex.Unlock()
+	// Reported after the bind, because the port is usually ephemeral and the
+	// harness that has to be pointed here cannot be told an address that does
+	// not exist yet.
+	if onListening != nil {
+		onListening(listener.Addr())
+	}
 
 	server := &http.Server{
 		Handler: s.Handler(),
