@@ -1,0 +1,1174 @@
+[
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "valid",
+    "want": "OK"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 2,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "schema2",
+    "want": "unsupported_schema_version@$.schema_version"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": "1",
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "schema_str",
+    "want": "unsupported_schema_version@$.schema_version"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "prompt": "text",
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "unknown_field",
+    "want": "unknown_field@$.prompt"
+  },
+  {
+    "event": {
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "missing_agent",
+    "want": "missing_field@$.agent"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "missing_attrs",
+    "want": "missing_field@$.attributes"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "nope",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "bad_uuid",
+    "want": "invalid_uuid@$.event_id"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.invented",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "bad_type",
+    "want": "unsupported_event_type@$.event_type"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "no_tz",
+    "want": "timestamp_requires_timezone@$.observed_at"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "not a time",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "bad_time",
+    "want": "invalid_timestamp@$.observed_at"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T08:00:00.500-04:00",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "offset_tz",
+    "want": "OK"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": -1,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "neg_offset",
+    "want": "invalid_number@$.monotonic_offset_ms"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 1e+16,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "huge_offset",
+    "want": "invalid_number@$.monotonic_offset_ms"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "completion": "x",
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "unknown_attr",
+    "want": "unknown_attribute@$.attributes.completion"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "http_status": 200,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "wrong_event_attr",
+    "want": "unknown_attribute@$.attributes.http_status"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "probably",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "bad_quality",
+    "want": "invalid_measurement_quality@$.attributes.measurement_quality"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": -1,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "neg_duration",
+    "want": "invalid_number@$.attributes.duration_ms"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": "4200",
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "str_duration",
+    "want": "invalid_number@$.attributes.duration_ms"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": true,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "bool_duration",
+    "want": "invalid_number@$.attributes.duration_ms"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3.5
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "float_count",
+    "want": "invalid_integer@$.attributes.tool_count"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": -1
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "neg_count",
+    "want": "invalid_integer@$.attributes.tool_count"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 10000000000000
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "huge_count",
+    "want": "invalid_integer@$.attributes.tool_count"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "ghp_version",
+    "want": "secret_like_value@$.producer.version"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "sk-0123456789abcdefghijklmnop",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "sk_display",
+    "want": "secret_like_value@$.agent.display_name"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "AKIAIOSFODNN7EXAMPLE",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "akia_name",
+    "want": "secret_like_value@$.agent.display_name"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "a\nb",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "newline_display",
+    "want": "unsafe_string@$.agent.display_name"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "a\u0000b",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "nul_display",
+    "want": "unsafe_string@$.agent.display_name"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "has space",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "space_harness",
+    "want": "invalid_identifier@$.harness"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "-leading",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "dash_harness",
+    "want": "invalid_identifier@$.harness"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": null,
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "null_harness",
+    "want": "OK"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": null,
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "null_model",
+    "want": "OK"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "empty_display",
+    "want": "invalid_string@$.agent.display_name"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "extra": "x",
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "producer_extra",
+    "want": "unknown_field@$.producer.extra"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "producer_missing",
+    "want": "missing_field@$.producer.version"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": [],
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": {
+        "instance_id": "mac-mini",
+        "name": "machinist",
+        "version": "0.5.0"
+      },
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "attrs_not_object",
+    "want": "expected_object@$.attributes"
+  },
+  {
+    "event": {
+      "agent": {
+        "display_name": "DGX DeepCode",
+        "id": "dgx-deepcode"
+      },
+      "attributes": {
+        "duration_ms": 4200.5,
+        "measurement_quality": "exact",
+        "outcome": "succeeded",
+        "tool_count": 3
+      },
+      "endpoint_id": "mac-mini",
+      "event_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "event_type": "turn.completed",
+      "harness": "deepcode",
+      "model": "ds-0731",
+      "monotonic_offset_ms": 4200.5,
+      "observed_at": "2026-09-05T12:00:00.123456Z",
+      "parent_span_id": null,
+      "producer": "x",
+      "schema_version": 1,
+      "session_id": "session-1",
+      "span_id": null,
+      "turn_id": "turn-1"
+    },
+    "name": "producer_not_object",
+    "want": "expected_object@$.producer"
+  }
+]
