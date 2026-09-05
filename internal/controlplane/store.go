@@ -238,7 +238,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // schemaVersion is the schema this build knows how to read. It must match the
 // PRAGMA user_version at the end of the schema block below; opening a fresh
 // database asserts that, so the two cannot drift apart unnoticed.
-const schemaVersion = 12
+const schemaVersion = 13
 
 func (s *Store) initialize(ctx context.Context) error {
 	var version int
@@ -309,9 +309,9 @@ DROP TABLE IF EXISTS runs; DROP TABLE IF EXISTS jobs; PRAGMA foreign_keys=ON;`);
 			return fmt.Errorf("upgrade database schema to version 10: %w", err)
 		}
 	}
-	// Versions 11 and 12 add review_assignments and fleet_leases and nothing
-	// else. A new table needs no upgrade func: the schema block below creates
-	// it at every version.
+	// Versions 11 through 13 add review_assignments, fleet_leases and
+	// issue_claims and nothing else. A new table needs no upgrade func: the
+	// schema block below creates it at every version.
 	const schema = `
 PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS jobs (
@@ -360,7 +360,12 @@ CREATE TABLE IF NOT EXISTS review_assignments (
 CREATE TABLE IF NOT EXISTS fleet_leases (
  fleet TEXT PRIMARY KEY, state TEXT NOT NULL, expires_at TEXT NOT NULL,
  reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
-PRAGMA user_version=12;`
+CREATE TABLE IF NOT EXISTS issue_claims (
+ repository TEXT NOT NULL, issue INTEGER NOT NULL, state TEXT NOT NULL,
+ holder TEXT NOT NULL, branch TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+ transfer TEXT NOT NULL DEFAULT '', claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL, PRIMARY KEY(repository,issue));
+PRAGMA user_version=13;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}

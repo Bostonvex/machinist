@@ -386,6 +386,8 @@ func (s *Server) routes() (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.authorizeSubmission(s.deleteJob))
 	mux.HandleFunc("GET /api/v1/leases", s.readLeases)
 	mux.HandleFunc("GET /api/v1/board", s.board)
+	mux.HandleFunc("GET /api/v1/claims", s.readClaims)
+	mux.HandleFunc("POST /api/v1/claims", s.authorizeSubmission(s.writeClaim))
 	mux.HandleFunc("POST /api/v1/leases", s.authorizeSubmission(s.writeLease))
 	mux.HandleFunc("POST /api/v1/workers/poll", s.authorizeWorker(s.poll))
 	mux.HandleFunc("POST /api/v1/runs/{id}/heartbeat", s.authorizeWorker(s.heartbeat))
@@ -767,6 +769,110 @@ type leaseView struct {
 	Lease
 	Allowed  bool `json:"allowed"`
 	Required bool `json:"required"`
+}
+
+// claimView is what a claim looks like from outside. It carries whether the
+// claim is still live, because every reader that recomputes that from a state
+// and an expiry is one more place the expired-but-held case can be got wrong.
+type claimView struct {
+	Claim
+	Live bool `json:"live"`
+}
+
+func (s *Server) readClaims(response http.ResponseWriter, request *http.Request) {
+	claims, err := s.store.Claims(request.Context())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	now := s.store.now().UTC()
+	views := make([]claimView, 0, len(claims))
+	for _, claim := range claims {
+		views = append(views, claimView{Claim: claim, Live: claim.Live(now)})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"claims": views})
+}
+
+type claimRequest struct {
+	Action     string `json:"action"`
+	Repository string `json:"repository"`
+	Issue      int    `json:"issue"`
+	Holder     string `json:"holder"`
+	Branch     string `json:"branch"`
+	Reason     string `json:"reason"`
+	Transfer   string `json:"transfer"`
+	ExpiresAt  string `json:"expires_at"`
+}
+
+func (s *Server) writeClaim(response http.ResponseWriter, request *http.Request) {
+	if !limitRequestBody(response, request, maxRequestBytes) {
+		return
+	}
+	var input claimRequest
+	if err := decodeJSON(request, &input); err != nil {
+		writeDecodeError(response, err)
+		return
+	}
+	// The expiry is parsed here because the wire carries it as text and the
+	// store does not. Everything else a claim may say is left to the store, so
+	// there is one gate rather than two that can drift.
+	var expires time.Time
+	if trimmed := strings.TrimSpace(input.ExpiresAt); trimmed != "" {
+		parsed, err := time.Parse(time.RFC3339, trimmed)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, fmt.Errorf("expires_at must be an RFC 3339 time: %w", err))
+			return
+		}
+		expires = parsed
+	}
+	var stored Claim
+	var err error
+	switch strings.TrimSpace(input.Action) {
+	case "take":
+		stored, err = s.store.TakeClaim(request.Context(), Claim{
+			Repository: input.Repository, Issue: input.Issue, Holder: input.Holder,
+			Branch: input.Branch, Reason: input.Reason, ExpiresAt: expires,
+		})
+	case "release":
+		stored, err = s.store.ReleaseClaim(request.Context(), input.Repository, input.Issue, input.Holder, input.Reason)
+	case "hold":
+		stored, err = s.store.HoldClaim(request.Context(), input.Repository, input.Issue,
+			input.Holder, input.Reason, expires, input.Transfer)
+	default:
+		// An unrecognised action is refused rather than defaulted. Guessing
+		// which transition was meant is guessing about whether work is being
+		// taken away from someone.
+		writeError(response, http.StatusBadRequest,
+			fmt.Errorf("unknown claim action %q: expected take, release or hold", input.Action))
+		return
+	}
+	if err != nil {
+		writeClaimError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, claimView{Claim: stored, Live: stored.Live(s.store.now().UTC())})
+}
+
+// writeClaimError separates the caller's mistakes from this control plane's. A
+// refused claim is a 409 and not a 400: the request was well formed and the
+// answer is that somebody else has the work, which is a different thing for the
+// caller to do something about.
+func writeClaimError(response http.ResponseWriter, err error) {
+	var taken *ErrClaimTaken
+	if errors.As(err, &taken) {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	var missing *ErrNoClaim
+	if errors.As(err, &missing) {
+		writeError(response, http.StatusConflict, err)
+		return
+	}
+	if errors.Is(err, ErrInvalidClaim) {
+		writeError(response, http.StatusBadRequest, err)
+		return
+	}
+	writeError(response, http.StatusInternalServerError, err)
 }
 
 // board serves the lane view of everything this control plane is tracking. It
