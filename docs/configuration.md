@@ -304,6 +304,29 @@ afterwards to show it. The confirmation is a flag rather than a prompt: this
 runs from launchd and cron at least as often as from a terminal, and a prompt
 there is not a question but a command that hangs.
 
+### The dashboard
+
+`machinist collector start` serves the interface on the same address as the API
+it reads, at `/`. It is the `buzz-agent-observability` dashboard, compiled into
+the binary rather than read from a directory beside it: a collector copied to a
+machine without that directory would otherwise serve nothing and call it a
+deployment, and on a machine where the directory is writable it would serve
+whatever was put there.
+
+Each asset carries an ETag derived from its own bytes and `Cache-Control:
+no-cache`, so the browser revalidates every load and is sent nothing when it
+already holds that exact file. This replaces the Python collector's
+`dashboard_version` handshake, which existed because a browser could hold a
+stale `app.js` against a newer API with no way to tell. A validator computed
+from the content cannot go stale — a changed file has a different one — so the
+page cannot be older than the code answering it.
+
+The page is served under a content security policy that allows only this
+origin, with no inline script and nowhere off-origin to connect. The dashboard
+renders values agents chose — display names, model identifiers, error codes —
+and the policy is what keeps one of those from pulling anything in or sending
+out what the page can read.
+
 ### Reading a collector
 
 The read routes answer on the collector's `listen` address and are not
