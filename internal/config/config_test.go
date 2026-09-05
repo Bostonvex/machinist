@@ -488,26 +488,108 @@ timeout = "45s"
 	}
 }
 
-func TestResolveCommandModelUsesAliasAndLeavesDefaultOptional(t *testing.T) {
+func TestResolveCommandModelUsesAlias(t *testing.T) {
 	worker := Worker{Executors: map[string]Executor{"codex": {
 		Command: []string{"codex", "exec", "--model=" + modelParameter, "-"},
 		Models:  map[string]string{"luna": "gpt-5.6-luna"},
 	}}}
-	agent := ResolvedCommand{Executor: "codex"}
 
-	resolved, err := worker.ResolveCommandModel(agent, "luna")
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "codex"}, "luna")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolved.Model != "gpt-5.6-luna" || strings.Join(resolved.Command, " ") != "codex exec --model=gpt-5.6-luna -" {
 		t.Fatalf("resolved = %#v", resolved)
 	}
-	defaulted, err := worker.ResolveCommandModel(agent, "")
+}
+
+// A command that takes a model and is given none is refused. Dropping the
+// parameter would hand the choice to the harness, which then runs whatever its
+// own configuration defaults to — a model machinist neither selected nor
+// recorded. Refusing is louder and, unlike a silent substitution, cannot be
+// mistaken for the run that was asked for.
+func TestResolveCommandModelRefusesToLetTheHarnessChoose(t *testing.T) {
+	worker := Worker{Executors: map[string]Executor{"codex": {
+		Command: []string{"codex", "exec", "--model=" + modelParameter, "-"},
+		Models:  map[string]string{"luna": "gpt-5.6-luna"},
+	}}}
+
+	if _, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "codex"}, ""); err == nil {
+		t.Fatal("a command that takes a model ran without one")
+	}
+}
+
+// A command that takes no model is unaffected: there is nothing for a harness
+// to choose behind machinist's back.
+func TestResolveCommandModelLeavesModellessCommandsAlone(t *testing.T) {
+	worker := Worker{Executors: map[string]Executor{"plain": {Command: []string{"agent", "run"}}}}
+
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "plain"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaulted.Model != "" || strings.Join(defaulted.Command, " ") != "codex exec -" {
-		t.Fatalf("defaulted = %#v", defaulted)
+	if resolved.Model != "" || strings.Join(resolved.Command, " ") != "agent run" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+}
+
+// default_model is how a command says which model it runs when a caller names
+// none. It is read through the alias table like any other request, so a profile
+// can name its default the same way it names every other model it offers.
+func TestResolveCommandModelUsesDeclaredDefault(t *testing.T) {
+	worker := Worker{Executors: map[string]Executor{
+		"aliased": {
+			Command:      []string{"codex", "exec", "--model=" + modelParameter, "-"},
+			Models:       map[string]string{"luna": "gpt-5.6-luna"},
+			DefaultModel: "luna",
+		},
+		"literal": {
+			Command:      []string{"codex", "exec", "--model=" + modelParameter, "-"},
+			DefaultModel: "gpt-5.6-sol",
+		},
+	}}
+
+	for executor, want := range map[string]string{"aliased": "gpt-5.6-luna", "literal": "gpt-5.6-sol"} {
+		resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: executor}, "")
+		if err != nil {
+			t.Fatalf("%s: %v", executor, err)
+		}
+		if resolved.Model != want {
+			t.Errorf("%s model = %q, want %q", executor, resolved.Model, want)
+		}
+	}
+}
+
+// A profile's default reaches the same code as an executor's, so a typed
+// profile is not left with the silent behaviour that was just removed.
+func TestResolveCommandModelUsesAProfilesDeclaredDefault(t *testing.T) {
+	worker := Worker{Profiles: map[string]Profile{"dgx": {
+		Harness: "codex", Provider: "openai_compatible", AuthMode: "local",
+		Command:      []string{"codex", "exec", "--model=" + modelParameter, "-"},
+		Models:       map[string]string{"local": "ds-0731"},
+		DefaultModel: "local",
+	}}}
+
+	resolved, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "dgx"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "ds-0731" {
+		t.Fatalf("profile model = %q, want ds-0731", resolved.Model)
+	}
+}
+
+// A default that names nothing the command offers is a misconfiguration, and is
+// reported as one rather than falling back to no model at all.
+func TestResolveCommandModelRefusesADefaultThatIsNotOffered(t *testing.T) {
+	worker := Worker{Executors: map[string]Executor{"codex": {
+		Command:      []string{"codex", "exec", "--model=" + modelParameter, "-"},
+		Models:       map[string]string{"luna": "gpt-5.6-luna"},
+		DefaultModel: "nonesuch",
+	}}}
+
+	if _, err := worker.ResolveCommandModel(ResolvedCommand{Executor: "codex"}, ""); err == nil {
+		t.Fatal("a default naming an unoffered model was accepted")
 	}
 }
 

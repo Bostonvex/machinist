@@ -69,11 +69,15 @@ type ControlPlane struct {
 }
 
 type Executor struct {
-	Command      []string          `toml:"command"`
-	Models       map[string]string `toml:"models"`
-	HerdrAgent   string            `toml:"herdr_agent"`
-	HerdrArgs    []string          `toml:"herdr_args"`
-	HerdrCommand []string          `toml:"herdr_command"`
+	Command []string          `toml:"command"`
+	Models  map[string]string `toml:"models"`
+	// DefaultModel is the model to use when a caller names none. It is read
+	// through Models like any other request, so it may be an alias or a literal
+	// model name.
+	DefaultModel string   `toml:"default_model"`
+	HerdrAgent   string   `toml:"herdr_agent"`
+	HerdrArgs    []string `toml:"herdr_args"`
+	HerdrCommand []string `toml:"herdr_command"`
 }
 
 // Profile describes one typed, worker-local harness/provider combination.
@@ -92,6 +96,7 @@ type Profile struct {
 	HerdrArgs           []string          `toml:"herdr_args"`
 	HerdrCommand        []string          `toml:"herdr_command"`
 	Models              map[string]string `toml:"models"`
+	DefaultModel        string            `toml:"default_model"`
 	RequiresExecutables []string          `toml:"requires_executables"`
 	RequiresOS          []string          `toml:"requires_os"`
 	RequiresArch        []string          `toml:"requires_arch"`
@@ -346,7 +351,7 @@ func (w Worker) ResolveCommandModel(command ResolvedCommand, requestedModel stri
 		if !profileOK {
 			return ResolvedCommand{}, fmt.Errorf("executor or profile %q is not configured on this worker", command.Executor)
 		}
-		executor = Executor{Command: profile.Command, Models: profile.Models}
+		executor = Executor{Command: profile.Command, Models: profile.Models, DefaultModel: profile.DefaultModel}
 		command.Profile = command.Executor
 		command.Harness = profile.Harness
 		command.Provider = profile.Provider
@@ -425,9 +430,23 @@ func (w Worker) ResolveRoute(command ResolvedCommand, available []string) (Resol
 	return ResolvedCommand{}, fmt.Errorf("route %q has no available profile on this worker", command.Route)
 }
 
+// resolveModel decides which model a command runs against.
+//
+// It fails closed. A command whose template takes a model but resolves to none
+// is refused rather than run with the parameter quietly dropped: the harness
+// would then choose a model of its own, and machinist would neither know nor
+// record which one. That is not a theoretical worry — it produces runs that
+// fail against a server that does not serve the harness's default, and, worse,
+// runs that succeed against a model nobody selected.
 func resolveModel(name string, executor Executor, requested string) (string, error) {
 	model := strings.TrimSpace(requested)
 	if model == "" {
+		model = strings.TrimSpace(executor.DefaultModel)
+	}
+	if model == "" {
+		if executor.supportsModel() {
+			return "", fmt.Errorf("executor %q takes a model but none was requested and it declares no default_model", name)
+		}
 		return "", nil
 	}
 	if !executor.supportsModel() {
