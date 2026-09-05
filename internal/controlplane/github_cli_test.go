@@ -595,3 +595,71 @@ func TestGitHubCLIRefusesToReadTheHeadOfAnUnnumberedPullRequest(t *testing.T) {
 		t.Fatalf("github was called anyway: %#v", runner.calls)
 	}
 }
+
+// Promotion is the only write the review path makes, so the argv it builds is
+// the whole of its blast radius. `gh pr ready` and `gh pr merge` are two words
+// apart on the command line and worlds apart in consequence.
+func TestGitHubCLIPromotesAPullRequestOutOfDraft(t *testing.T) {
+	cli, runner := newScriptedGitHubCLI(scriptedGitHubResult{stdout: ""})
+	if err := cli.PromotePullRequest(context.Background(), "owner/name", 12); err != nil {
+		t.Fatal(err)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "pr ready 12") {
+		t.Fatalf("the change was not taken out of draft: %s", call)
+	}
+	if !strings.Contains(call, "--repo owner/name") {
+		t.Fatalf("the promotion did not name the repository: %s", call)
+	}
+	// The two subcommands that would land the change rather than present it.
+	// Neither is this route's to call: promotion is not merge authority.
+	for _, forbidden := range []string{"merge", "--admin", "close"} {
+		if strings.Contains(call, forbidden) {
+			t.Fatalf("the promotion asked for %q: %s", forbidden, call)
+		}
+	}
+	if strings.Contains(call, "sh -c") {
+		t.Fatalf("the promotion unexpectedly used a shell: %s", call)
+	}
+}
+
+// A number the control plane does not have is never sent to the forge. `gh pr
+// ready` with no number promotes the pull request for the current branch, which
+// on a machine with a checkout is a real change nobody reviewed.
+func TestGitHubCLIRefusesToPromoteAnUnnumberedPullRequest(t *testing.T) {
+	for _, number := range []int{0, -1} {
+		cli, runner := newScriptedGitHubCLI()
+		if err := cli.PromotePullRequest(context.Background(), "owner/name", number); err == nil {
+			t.Fatalf("pull request %d was accepted", number)
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("github was called anyway: %#v", runner.calls)
+		}
+	}
+}
+
+// An unnamed or malformed repository is refused before the forge is asked, for
+// the same reason: `gh` falls back to the current directory's remote.
+func TestGitHubCLIRefusesToPromoteInAnUnnamedRepository(t *testing.T) {
+	for _, repository := range []string{"", "  ", "name", "owner/name/extra"} {
+		cli, runner := newScriptedGitHubCLI()
+		if err := cli.PromotePullRequest(context.Background(), repository, 12); err == nil {
+			t.Fatalf("repository %q was accepted", repository)
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("github was called anyway for %q: %#v", repository, runner.calls)
+		}
+	}
+}
+
+// A promotion the forge refuses is an error, not a silent success. The caller
+// decides what to do about it; what it must not do is report a draft as ready.
+func TestGitHubCLIReportsAPromotionTheForgeRefused(t *testing.T) {
+	cli, _ := newScriptedGitHubCLI(scriptedGitHubResult{
+		stderr: "GraphQL: Could not resolve to a node with the global id",
+		err:    errors.New("exit status 1"),
+	})
+	if err := cli.PromotePullRequest(context.Background(), "owner/name", 12); err == nil {
+		t.Fatal("a refused promotion was reported as done")
+	}
+}

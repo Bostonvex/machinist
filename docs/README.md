@@ -26,6 +26,8 @@ matches the way you want to work.
   from the control plane rather than through the fleet itself.
 - [The work board](work-board.md) — every job in the lane it is in, projected
   from what the control plane recorded rather than reconstructed from labels.
+- [Draft until reviewed](draft-until-reviewed.md) — why machine-written changes
+  open as drafts, and what takes them out of one.
 - [What is owed a merge](merge-owed.md) — which reviewed work is waiting to be
   landed, decided from recorded verdicts and the forge rather than from parsed
   issue comments.

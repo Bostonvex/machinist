@@ -56,6 +56,11 @@ type fakeGitHubPullRequests struct {
 	head      string
 	headErr   error
 	headCalls int
+
+	promoteErr    error
+	promoteCalls  int
+	promotedRepos []string
+	promoted      []int
 }
 
 func (f *fakeGitHubPullRequests) ListPullRequestFiles(_ context.Context, repository string, number int) ([]string, error) {
@@ -77,6 +82,20 @@ func (f *fakeGitHubPullRequests) PullRequestHead(_ context.Context, repository s
 		return "b3d1a5c47f2e908a1c6d5b4e3f2a1908c7d6e5f4", nil
 	}
 	return f.head, nil
+}
+
+// PromotePullRequest records the promotion rather than performing one. What a
+// test needs to know is whether the change was taken out of draft at all, and
+// which change -- promoting the wrong one is the failure that would otherwise
+// look identical to promoting the right one.
+func (f *fakeGitHubPullRequests) PromotePullRequest(_ context.Context, repository string, number int) error {
+	f.promoteCalls++
+	if f.promoteErr != nil {
+		return f.promoteErr
+	}
+	f.promotedRepos = append(f.promotedRepos, repository)
+	f.promoted = append(f.promoted, number)
+	return nil
 }
 
 func (f *fakeGitHubPullRequests) LinkedPullRequests(_ context.Context, repository string, number int) ([]GitHubLinkedPullRequest, error) {

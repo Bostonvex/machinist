@@ -839,7 +839,12 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		"return a valid handoff, whether it exits or remains active",
 		"read-only reviewer",
 		"Never inline the diff",
-		"non-draft pull request linked",
+		// The implementer opens a draft and never lifts it: its own review is
+		// not independent, because it wrote the change. See
+		// docs/draft-until-reviewed.md.
+		"open one **draft** pull request linked",
+		"Never run `gh pr ready`",
+		"never convert one back",
 		"For both paths, confirm the base, exact head, issue link",
 		"recheck that it is open before pushing",
 		"return to linked-pull-request resolution",
@@ -883,7 +888,8 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"open one draft pull request",
+		"open one non-draft pull request",
+		"open non-draft state",
 		"mark the pull request ready for human review",
 		"branch, complete diff",
 		"SUBAGENT role=<role>",
@@ -914,8 +920,13 @@ func TestExampleCommandDefinitionsLoad(t *testing.T) {
 	if reopen, recover := strings.Index(foreman.Prompt, "closed-unmerged candidates present"), strings.Index(foreman.Prompt, "For any existing or reopened"); reopen < 0 || recover < 0 || reopen > recover {
 		t.Fatalf("foreman prompt must reopen a unique safe pull request before worktree recovery: reopen=%d recover=%d", reopen, recover)
 	}
-	if words := len(strings.Fields(foreman.Prompt)); words > 2200 {
-		t.Fatalf("foreman prompt has %d words, want no more than 2200", words)
+	// The cap is pinned just above the prompt's current size rather than set to
+	// a round number with room in it, so that any growth has to be argued for
+	// here. Raise it only for a rule that has to be in the prompt, and re-pin it
+	// tight afterwards: a ceiling that is moved whenever it is reached is not a
+	// ceiling. Last raised for the draft rule above (docs/draft-until-reviewed.md).
+	if words := len(strings.Fields(foreman.Prompt)); words > 2250 {
+		t.Fatalf("foreman prompt has %d words, want no more than 2250", words)
 	}
 
 	audit, err := LoadCommand(definition, "audit")

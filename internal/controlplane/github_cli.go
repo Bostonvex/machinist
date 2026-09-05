@@ -941,3 +941,29 @@ func decodeSingleJSON(output []byte, target any) error {
 	}
 	return nil
 }
+
+// PromotePullRequest takes a pull request out of draft.
+//
+// It is a write, and the only one the review path makes. That is deliberate and
+// bounded: promoting a draft is not merging, and nothing here decides whether a
+// change may land. What it decides is whether unreviewed machine-written work
+// is presented to a person as ready to read.
+//
+// There is no matching demotion. Machinist promotes and never converts back,
+// because converting back would undo a deliberate human act — someone marking
+// their own change ready — on the strength of an automated verdict, and the
+// objection is already visible where it belongs: in the recorded verdict and in
+// what `machinist merge-owed` says is owed attention.
+func (g *GitHubCLI) PromotePullRequest(ctx context.Context, repository string, number int) error {
+	repository, err := normalizeGitHubRepository(repository)
+	if err != nil {
+		return err
+	}
+	if number <= 0 {
+		return errors.New("github pull request number must be positive")
+	}
+	_, err = g.run(ctx, "promote pull request", []string{
+		"pr", "ready", fmt.Sprint(number), "--repo", repository,
+	})
+	return err
+}
